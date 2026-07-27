@@ -1,0 +1,82 @@
+# mu-sdk-python — the Product-B developer SDK: a THIN async wire client.
+# No engine, no stores, no strategies, no embedder (CLAUDE.md; PACKAGING-v2 §4.2).
+# Depends on `mu-contracts` (the shared wire vocabulary: Namespace/Visibility/error base) + `httpx`
+# only — never `mu-engine`/`mu-local` (import-linter "sdk-has-no-engine", PACKAGING-v2 §5.1 rule 2).
+[project]
+name = "mu-sdk"
+version = "0.1.0"
+description = "Memory Universe — Python developer SDK (async wire client: add/search/recall/context)."
+requires-python = ">=3.12,<3.13"
+license = "Apache-2.0"
+readme = "README.md"
+dependencies = [
+    # Shared wire vocabulary ONLY (Namespace/Visibility/Tier + the error-hierarchy vocabulary) —
+    # local path dep: mu-contracts is not yet published (PACKAGING-v2 §5.5, "day one" pin is
+    # pending the actual PyPI/registry push). Pin the range once published: "mu-contracts>=0.1,<0.2".
+    "mu-contracts",
+    "httpx>=0.27,<1",
+    "pydantic>=2.9,<3",
+    "pydantic-settings>=2.6,<3",
+    "tenacity>=9.0,<10",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3,<9",
+    "pytest-asyncio>=0.24,<0.25",
+    "mypy>=1.13,<2",
+    "ruff>=0.8,<0.9",
+    "import-linter>=2.1,<3",
+    # Dev-only: the REAL conformance server the integration suite runs against (DEV-STANDARDS
+    # "integration tests use the real system — zero mocks"). Never imported by mu_sdk itself.
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.32,<1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mu_sdk"]
+
+[tool.uv.sources]
+# Path dependency onto the sibling repo's mu-contracts distribution (PACKAGING-v2 §1.2: mu-sdk-python
+# "may depend on... mu-contracts — only"). Absolute path: the two repos are siblings under mu_project/,
+# not a uv workspace (mu-sdk-python is its own repo per the ratified 5-repo split, PACKAGING-v2 banner
+# item 1) — so this is a directory dependency, not a workspace link.
+mu-contracts = { path = "../mu-core/packages/mu-contracts" }
+
+# ------------------------------------------------------------------------------------------------
+# mypy — strict, CI gate (DEV-STANDARDS "strict static typing").
+# ------------------------------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unreachable = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+disallow_any_unimported = true
+no_implicit_reexport = true
+show_error_codes = true
+pretty = true
+mypy_path = ["src"]
+namespace_packages = true
+explicit_package_bases = true
+
+[[tool.mypy.overrides]]
+module = ["tenacity.*"]
+ignore_missing_imports = true
+
+# ------------------------------------------------------------------------------------------------
+# pytest — asyncio auto mode + the two required markers (DEV-STANDARDS testing).
+# ------------------------------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config --import-mode=importlib"
+markers = [
+    "unit: isolated logic; mocks permitted (DEV-STANDARDS: mocks ONLY in pure unit tests).",
+    "integration: real uvicorn conformance server, real httpx over real TCP, ZERO mocks.",
+]

@@ -1,0 +1,24 @@
+# import-linter — per-repo boundary (PACKAGING-v2 §5.2: "a repo can only lint packages it contains").
+# mu-sdk-python contains exactly one first-party package: mu_sdk.
+[importlinter]
+root_packages =
+    mu_sdk
+# mu_engine/mu_local/mu_server/mu_client are never installed in THIS repo's venv (they live in
+# sibling repos) — they are "external" to import-linter's graph-builder, so the forbidden-modules
+# contract below needs this flag to check for their import statements at all.
+include_external_packages = True
+
+# The load-bearing gate: the SDK must never import the engine (or the embedded local engine) —
+# the "no engine algorithm" guarantee (PACKAGING-v2 §1.1/§5.1 rule 2; CLAUDE.md "no engine, no
+# stores, no strategies, no embedder"). mu_contracts is NOT forbidden — it is the one allowed
+# in-project edge (mu-sdk -> mu-contracts ONLY).
+[importlinter:contract:sdk-has-no-engine]
+name = sdk-has-no-engine (mu_sdk must never import mu_engine or mu_local)
+type = forbidden
+source_modules =
+    mu_sdk
+forbidden_modules =
+    mu_engine
+    mu_local
+    mu_server
+    mu_client
