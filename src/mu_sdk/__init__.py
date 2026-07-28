@@ -1,8 +1,8 @@
 """mu-sdk — the Memory Universe Python developer SDK.
 
-A THIN async wire client (`MemoryClient`): add / search / recall / context, talking to
-`mu-server`'s public surface ONLY over the versioned wire contract. No engine, no stores, no
-strategies, no embedder (see `CLAUDE.md`; `PACKAGING-v2.md` §4.2).
+A THIN async wire client (`MemoryClient`): add / search / recall (tier-scoped) / consolidate / ask /
+context, talking to `mu-server`'s public surface ONLY over the versioned wire contract. No engine,
+no stores, no strategies, no embedder (see `CLAUDE.md`; `PACKAGING-v2.md` §4.2).
 """
 
 from __future__ import annotations

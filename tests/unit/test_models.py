@@ -8,6 +8,7 @@ import pytest
 from mu_contracts.domain.model.memory import Namespace, Visibility
 from pydantic import ValidationError as PydanticValidationError
 
+from mu_sdk.models.consolidate import AskRequest, AskResult, ConsolidateRequest, ConsolidateResult
 from mu_sdk.models.context import ContextIndexListView
 from mu_sdk.models.memory import MemoryCreateRequest, MemoryListResponse, MemoryResponse
 from mu_sdk.models.recall import (
@@ -122,3 +123,35 @@ def test_recall_result_memory_ids_projection_is_content_free() -> None:
 def test_context_index_list_view_allows_empty_indexes() -> None:
     view = ContextIndexListView(session_id="s-1", indexes=[], generated_at=datetime.now(UTC))
     assert view.indexes == []
+
+
+def test_consolidate_request_default_limit() -> None:
+    request = ConsolidateRequest()
+    assert request.limit == 50
+
+
+def test_consolidate_request_is_frozen_and_rejects_unknown_fields() -> None:
+    request = ConsolidateRequest(limit=10)
+    with pytest.raises(PydanticValidationError):
+        request.limit = 20
+    with pytest.raises(PydanticValidationError):
+        ConsolidateRequest(limit=10, unknown_field="boom")  # type: ignore[call-arg]
+
+
+def test_consolidate_result_carries_genuine_engine_counts() -> None:
+    result = ConsolidateResult(
+        facts_extracted=2, added=1, superseded=1, generated_at=datetime.now(UTC)
+    )
+    assert result.superseded == 1  # the MemGC/Phi headline: invalidate-don't-delete SUPERSESSION
+
+
+def test_ask_request_rejects_empty_question() -> None:
+    with pytest.raises(PydanticValidationError):
+        AskRequest(question="")
+
+
+def test_ask_result_carries_the_synthesized_answer() -> None:
+    result = AskResult(
+        question="Where does Ada work?", answer="Acme", generated_at=datetime.now(UTC)
+    )
+    assert result.answer == "Acme"

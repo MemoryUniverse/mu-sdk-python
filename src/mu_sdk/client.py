@@ -1,12 +1,14 @@
 """`MemoryClient` — the async wire client (mu-local-and-sdk-spec.md §2.3; port-of-pattern
 `mem0.MemoryClient`, `other_repos/mem0/mem0/client/main.py:24-105`).
 
-Exposes exactly the four verbs this phase's brief scopes: `add` (write), `search` (simple ranked
-list, mem0 muscle-memory), `recall` (the MU-canonical rich multi-channel read), and `.context`
-(the `ContextApi` sub-client's read-only `discover`). No engine algorithm, no store adapter — every
-verb is one HTTP call through the `Transport` port, wrapped by the retry/timeout/trace decorator
-stack (`mu_sdk.decorators`), with a typed error raised via `mu_sdk.error_mapping` on any non-2xx
-response.
+Exposes `add` (write), `search` (simple ranked list, mem0 muscle-memory), `recall` (the
+MU-canonical rich multi-channel read — now with an optional `tier=` arg for tier-SCOPED recall,
+net-new this phase), `consolidate` (MTM->LTM DISTILL: invalidate-don't-delete SUPERSESSION +
+bi-temporal SPO extraction, net-new this phase), `ask` (MU's own SLM-powered synthesis over
+recalled context, net-new this phase), and `.context` (the `ContextApi` sub-client's read-only
+`discover`). No engine algorithm, no store adapter — every verb is one HTTP call through the
+`Transport` port, wrapped by the retry/timeout/trace decorator stack (`mu_sdk.decorators`), with a
+typed error raised via `mu_sdk.error_mapping` on any non-2xx response.
 
 Cancellation (DEV-STANDARDS rule 1): every await here is a direct `await` with no surrounding
 `except Exception`/`except BaseException` — `asyncio.CancelledError` propagates untouched through
@@ -25,6 +27,7 @@ from mu_contracts.domain.model.memory import Visibility
 from mu_sdk.auth import SdkAuth, resolve_auth
 from mu_sdk.decorators import with_retry, with_timeout, with_trace
 from mu_sdk.error_mapping import raise_for_wire_error
+from mu_sdk.models.consolidate import AskRequest, AskResult, ConsolidateRequest, ConsolidateResult
 from mu_sdk.models.context import ContextIndexListView
 from mu_sdk.models.memory import MemoryCreateRequest, MemoryListResponse, MemoryResponse
 from mu_sdk.models.recall import RecallChannels, RecallMode, RecallRequest, RecallResult
@@ -199,11 +202,18 @@ class MemoryClient:
         persona: str | None = None,
         max_tokens: int | None = None,
         correlation_id: str | None = None,
+        tier: str | None = None,
     ) -> RecallResult:
         """`POST /v1/memories/recall` — the MU-canonical rich multi-channel read
         (recall-service-design.md §1.1; see `mu_sdk.models.recall` module docstring for the
         wire-route rationale). Tenancy (`namespace`) is resolved server-side from the auth
-        identity, never sent by the client (see that same module docstring)."""
+        identity, never sent by the client (see that same module docstring).
+
+        `tier` (net-new this phase: `"stm"|"mtm"|"ltm"`), when given, is sent as the `?tier=`
+        QUERY param (not a body field) and always wins server-side over `channels` — tier-SCOPED
+        recall narrowed to exactly one real channel (the demo server's `_effective_tier_filter`).
+        `None` (the default) leaves channel selection to `channels`/`mode` as before — no
+        behaviour change for an existing caller that doesn't pass `tier`."""
         request = RecallRequest(
             text=text,
             limit=limit if limit is not None else self._settings.default_recall_limit,
@@ -213,12 +223,43 @@ class MemoryClient:
             max_tokens=max_tokens,
             correlation_id=correlation_id,
         )
+        params = {"tier": tier} if tier is not None else None
         response = await self._execute(
             "POST",
             "/v1/memories/recall",
+            params=params,
             json_body=request.model_dump(mode="json", exclude_none=True),
         )
         return RecallResult.model_validate(response.json_body)
+
+    async def consolidate(self, *, limit: int = 50) -> ConsolidateResult:
+        """`POST /v1/memories/consolidate` (net-new this phase) — MTM->LTM DISTILL: extracts
+        bi-temporal SPO facts from the recent STM/MTM window and writes them into the LTM graph,
+        applying invalidate-don't-delete SUPERSESSION (the MemGC/Phi headline capability).
+        Tenancy is resolved server-side from the auth identity, same as every other verb."""
+        request = ConsolidateRequest(limit=limit)
+        response = await self._execute(
+            "POST",
+            "/v1/memories/consolidate",
+            json_body=request.model_dump(mode="json", exclude_none=True),
+        )
+        return ConsolidateResult.model_validate(response.json_body)
+
+    async def ask(self, question: str, *, limit: int | None = None) -> AskResult:
+        """`POST /v1/memories/ask` (net-new this phase) — MU's own SLM-powered synthesis over
+        recalled context (contrast with the raw ranked list `recall()`/`search()` return). Raises
+        `ServiceUnavailableError` (mapped from the server's 503) when the server has no LLM/SLM
+        configured (heuristic mode) — never a silently-empty answer."""
+        request = AskRequest(
+            question=question,
+            limit=limit if limit is not None else self._settings.default_recall_limit,
+        )
+        response = await self._execute(
+            "POST",
+            "/v1/memories/ask",
+            json_body=request.model_dump(mode="json", exclude_none=True),
+        )
+        return AskResult.model_validate(response.json_body)
 
     # ---- lifecycle ----
 

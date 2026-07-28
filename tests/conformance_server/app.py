@@ -62,6 +62,13 @@ _memories: dict[str, dict[str, dict[str, Any]]] = {}  # tenant_key -> {memory_id
 _idempotency: dict[
     str, dict[str, tuple[str, dict[str, Any]]]
 ] = {}  # tenant_key -> {key: (hash, response)}
+# `consolidate`/`ask` fake state — per-tenant ACTIVE fact table keyed by (subject, predicate), the
+# simplest possible REAL implementation of invalidate-don't-delete SUPERSESSION (module docstring
+# philosophy): a later `add` sharing (subject, predicate) with a DIFFERENT object supersedes the
+# prior one. `_consolidated_ids` tracks which stored memories a consolidate sweep already consumed
+# (so a repeat sweep never double-counts `facts_extracted`).
+_facts: dict[str, dict[tuple[str, str], dict[str, Any]]] = {}  # tenant_key -> {(s,p): {...}}
+_consolidated_ids: dict[str, set[str]] = {}  # tenant_key -> {memory_id, ...} already swept
 
 
 class Identity(BaseModel):
@@ -245,11 +252,27 @@ async def recall_memories(
     body: _RecallBody,
     identity: Annotated[Identity, Depends(resolve_identity)],
     response: Response,
+    tier: str | None = None,
     x_request_id: Annotated[str | None, Header()] = None,
 ) -> dict[str, Any]:
+    """`?tier=` (net-new query param, mirrors the real demo server's `_effective_tier_filter`)
+    always wins over `body.channels` when both are given: narrows both the matched-item filter
+    AND the reported `channels_run` to exactly that one channel."""
     response.headers["X-Request-ID"] = _request_id(x_request_id)
     tenant_store = _memories.get(identity.tenant_key, {})
     matches = [m for m in tenant_store.values() if body.text.lower() in m["content"].lower()]
+    channels_run = body.channels
+    if tier is not None:
+        if tier not in ("stm", "mtm", "ltm"):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "detail": f"tier must be one of stm|mtm|ltm, got {tier!r}",
+                    "request_id": _request_id(x_request_id),
+                },
+            )
+        matches = [m for m in matches if m["tier"] == tier]
+        channels_run = {"stm": tier == "stm", "mtm": tier == "mtm", "ltm": tier == "ltm"}
     matches.sort(key=lambda m: m["created_at"], reverse=True)
     matches = matches[: body.limit]
     items = [
@@ -274,8 +297,88 @@ async def recall_memories(
             "visibility": "shared",
         },
         "items": items,
-        "channels_run": body.channels,
+        "channels_run": channels_run,
         "degraded": None,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+# ---- POST /v1/memories/consolidate -------------------------------------------------------------
+# NET-NEW route (task brief: "New wire routes (consolidate/ask) are net-new"). See the module-level
+# `_facts`/`_consolidated_ids` docstring for the fake's supersession bookkeeping.
+
+
+class _ConsolidateBody(BaseModel):
+    limit: int = 50
+
+
+@app.post("/v1/memories/consolidate")
+async def consolidate_memories(
+    body: _ConsolidateBody,
+    identity: Annotated[Identity, Depends(resolve_identity)],
+    response: Response,
+    x_request_id: Annotated[str | None, Header()] = None,
+) -> dict[str, Any]:
+    response.headers["X-Request-ID"] = _request_id(x_request_id)
+    tenant_store = _memories.get(identity.tenant_key, {})
+    facts = _facts.setdefault(identity.tenant_key, {})
+    swept_ids = _consolidated_ids.setdefault(identity.tenant_key, set())
+
+    unswept = [
+        m
+        for m in sorted(tenant_store.values(), key=lambda m: m["created_at"])
+        if m["id"] not in swept_ids and m.get("subject") and m.get("predicate") and m.get("object")
+    ][: body.limit]
+
+    added = 0
+    superseded = 0
+    for m in unswept:
+        key = (m["subject"], m["predicate"])
+        existing = facts.get(key)
+        if existing is None or existing["object"] != m["object"]:
+            if existing is not None and existing["object"] != m["object"]:
+                superseded += 1  # invalidate-don't-delete: the prior (subject,predicate) loses
+            facts[key] = {"object": m["object"], "memory_id": m["id"]}
+            added += 1
+        swept_ids.add(m["id"])
+
+    return {
+        "facts_extracted": len(unswept),
+        "added": added,
+        "superseded": superseded,
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+# ---- POST /v1/memories/ask ---------------------------------------------------------------------
+# NET-NEW route. Fake synthesis: answers from the CURRENT (post-supersession) active fact table
+# only — never a raw recall item — so `ask()` vs `recall()` genuinely differ at the wire level.
+
+
+class _AskBody(BaseModel):
+    question: str = Field(min_length=1)
+    limit: int = 10
+
+
+@app.post("/v1/memories/ask")
+async def ask_memory(
+    body: _AskBody,
+    identity: Annotated[Identity, Depends(resolve_identity)],
+    response: Response,
+    x_request_id: Annotated[str | None, Header()] = None,
+) -> dict[str, Any]:
+    response.headers["X-Request-ID"] = _request_id(x_request_id)
+    facts = _facts.get(identity.tenant_key, {})
+    question_lower = body.question.lower()
+    hits = [
+        f"{subject} {predicate} {fact['object']}"
+        for (subject, predicate), fact in facts.items()
+        if subject.lower() in question_lower
+    ]
+    answer = "; ".join(hits) if hits else "no consolidated facts match that question"
+    return {
+        "question": body.question,
+        "answer": answer,
         "generated_at": datetime.now(UTC).isoformat(),
     }
 

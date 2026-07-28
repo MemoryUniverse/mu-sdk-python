@@ -169,3 +169,91 @@ async def test_missing_credentials_raise_authentication_error_from_the_real_serv
         with pytest.raises(AuthenticationError) as exc_info:
             await client.search("anything")
         assert exc_info.value.status_code == 401
+
+
+# ---- consolidate / ask / tier-scoped recall (net-new this phase) ------------------------------
+
+
+async def test_consolidate_extracts_facts_and_reports_real_counts(
+    conformance_base_url: str,
+) -> None:
+    async with MemoryClient(settings=_settings(conformance_base_url)) as client:
+        await client.add("Ada uses FalkorDB", subject="Ada", predicate="uses", object="FalkorDB")
+        await client.add("Bob uses Postgres", subject="Bob", predicate="uses", object="Postgres")
+
+        report = await client.consolidate()
+
+        assert report.facts_extracted == 2
+        assert report.added == 2
+        assert report.superseded == 0
+
+
+async def test_consolidate_supersedes_a_conflicting_fact_invalidate_dont_delete(
+    conformance_base_url: str,
+) -> None:
+    """The MemGC/Phi headline scenario: a later fact sharing (subject, predicate) with a DIFFERENT
+    object SUPERSEDES the prior one — proven end-to-end over the real wire (two `add` + two
+    `consolidate` round trips), never a silent overwrite (the real demo server proves the same
+    behaviour with genuine invalidate-don't-delete bi-temporal SPO; see
+    `verify_supersession.py`)."""
+    async with MemoryClient(settings=_settings(conformance_base_url)) as client:
+        await client.add("Ada uses FalkorDB", subject="Ada", predicate="uses", object="FalkorDB")
+        first_report = await client.consolidate()
+        assert first_report.added == 1
+        assert first_report.superseded == 0
+
+        await client.add("Ada switched to Neo4j", subject="Ada", predicate="uses", object="Neo4j")
+        second_report = await client.consolidate()
+        assert second_report.facts_extracted == 1
+        assert second_report.added == 1
+        assert second_report.superseded == 1, "the FalkorDB fact was not reported as superseded"
+
+
+async def test_ask_synthesizes_an_answer_from_the_current_consolidated_fact(
+    conformance_base_url: str,
+) -> None:
+    """`ask()` answers from the CURRENT (post-supersession) fact only — contrast with `recall()`,
+    which would still surface both raw memories."""
+    async with MemoryClient(settings=_settings(conformance_base_url)) as client:
+        await client.add("Ada uses FalkorDB", subject="Ada", predicate="uses", object="FalkorDB")
+        await client.consolidate()
+        await client.add("Ada switched to Neo4j", subject="Ada", predicate="uses", object="Neo4j")
+        await client.consolidate()
+
+        result = await client.ask("What does Ada use?")
+
+        assert "Neo4j" in result.answer
+        assert "FalkorDB" not in result.answer
+        assert result.question == "What does Ada use?"
+
+
+async def test_recall_tier_query_param_narrows_to_one_channel(
+    conformance_base_url: str,
+) -> None:
+    """`tier=` (net-new arg) always wins over the default `channels` triple: only the matching
+    tier's item comes back, and `channels_run` reports exactly that one channel."""
+    async with MemoryClient(settings=_settings(conformance_base_url)) as client:
+        await client.add("widget in stm", tier="stm")
+        await client.add("widget in ltm", tier="ltm")
+
+        stm_only = await client.recall("widget", tier="stm")
+        assert len(stm_only.items) == 1
+        assert stm_only.items[0].tier == "stm"
+        assert stm_only.channels_run.stm is True
+        assert stm_only.channels_run.mtm is False
+        assert stm_only.channels_run.ltm is False
+
+        ltm_only = await client.recall("widget", tier="ltm")
+        assert len(ltm_only.items) == 1
+        assert ltm_only.items[0].tier == "ltm"
+
+
+async def test_recall_without_tier_arg_is_unchanged(conformance_base_url: str) -> None:
+    """Backward-compat guard: omitting `tier=` (the default, `None`) behaves exactly as before —
+    no behaviour change for an existing caller."""
+    async with MemoryClient(settings=_settings(conformance_base_url)) as client:
+        await client.add("widget in stm", tier="stm")
+        await client.add("widget in ltm", tier="ltm")
+
+        result = await client.recall("widget")
+        assert len(result.items) == 2

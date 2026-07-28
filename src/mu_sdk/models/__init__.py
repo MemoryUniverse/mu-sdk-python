@@ -5,6 +5,7 @@ import ...`` ergonomics."""
 
 from __future__ import annotations
 
+from mu_sdk.models.consolidate import AskRequest, AskResult, ConsolidateRequest, ConsolidateResult
 from mu_sdk.models.context import ContextIndexListView, ContextIndexView
 from mu_sdk.models.memory import MemoryCreateRequest, MemoryListResponse, MemoryResponse
 from mu_sdk.models.recall import (
@@ -16,6 +17,10 @@ from mu_sdk.models.recall import (
 )
 
 __all__ = [
+    "AskRequest",
+    "AskResult",
+    "ConsolidateRequest",
+    "ConsolidateResult",
     "ContextIndexListView",
     "ContextIndexView",
     "MemoryCreateRequest",
