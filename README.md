@@ -82,9 +82,9 @@ the hosted plane's private beta.
 
 ```mermaid
 flowchart LR
-    App["Your app"] --> SDK["mu-sdk-python"]
-    SDK --> Wire["Wire<br/>REST / MCP / Centrifugo"]
-    Wire --> Srv["mu-server<br/>(not public yet)"]
+    App["Developer's app / agent"] --> SDK["MemoryClient<br/>add - recall - consolidate - ask<br/>tier-scoped recall (stm / mtm / ltm)"]
+    SDK --> Wire["Wire<br/>REST - MCP - Centrifugo<br/>typed schemas (pydantic)"]
+    Wire --> Srv["mu-server<br/>hosted, governed plane<br/>(not public yet)"]
 ```
 
 `MemoryClient` wraps an `httpx`-based `Transport` behind a fixed pipeline: trace, then an overall
