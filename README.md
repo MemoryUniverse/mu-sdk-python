@@ -1,27 +1,27 @@
 # mu-sdk-python
 
 **The Python developer SDK for Memory Universe.** A thin, typed, async wire client for adding,
-recalling, and reasoning over memory — for anyone building their own agent, tool, or product on top
+recalling, and reasoning over memory, for anyone building their own agent, tool, or product on top
 of Memory Universe rather than using Claude Code or Codex directly.
 
 > **Status: early, under active development (private beta in progress).** The SDK itself is built,
-> typed, tested (unit + real-HTTP conformance suite — no mocks), and used internally to drive
-> real LangGraph agents end to end. What it talks to — `mu-server`, the hosted, governed, multi-
-> tenant plane — is designed but **not yet publicly available**. See [Honest note on what you can
+> typed, tested (unit + real-HTTP conformance suite, no mocks), and used internally to drive
+> real LangGraph agents end to end. What it talks to, `mu-server`, the hosted, governed, multi-
+> tenant plane, is designed but **not yet publicly available**. See [Honest note on what you can
 > run today](#honest-note-on-what-you-can-run-today).
 
 ## The vision
 
 Memory Universe is a persistent, governed context layer for teams of people and their AI agents:
 context that survives across sessions, teammates, machines, and agent vendors, and travels only as
-far as it was authorized to. `mu-sdk-python` is the Product-B surface of that vision — the SDK a
+far as it was authorized to. `mu-sdk-python` is the Product-B surface of that vision: the SDK a
 developer reaches for when they're building their *own* agent product and want memory (with
 governance, provenance, and per-fragment sharing) as infrastructure rather than something they
 build in-house.
 
 ## What's in this repo
 
-`mu-sdk-python` is a wire client, nothing else — no engine, no stores, no strategies, no embedder.
+`mu-sdk-python` is a wire client, nothing else: no engine, no stores, no strategies, no embedder.
 It depends only on `mu-contracts` (from `mu-core`) for the shared vocabulary (namespaces,
 visibility, error types) and speaks to `mu-server`'s public surface through REST, MCP (so an agent
 framework can call the same operations as tools), and Centrifugo for live push.
@@ -30,21 +30,21 @@ framework can call the same operations as tools), and Centrifugo for live push.
 
 | Verb | What it does |
 |---|---|
-| `add(content, ...)` | Write a memory (rejects a `PRIVATE` write to the shared endpoint server-side — no accidental leak path) |
+| `add(content, ...)` | Write a memory (rejects a `PRIVATE` write to the shared endpoint server-side, so there's no accidental leak path) |
 | `search(query, ...)` | Simple ranked-list recall (the mem0-style muscle-memory name) |
-| `recall(text, ...)` | The richer, multi-channel read — persona-aware, tier-scoped (`stm`/`mtm`/`ltm`), channel-selectable |
+| `recall(text, ...)` | The richer, multi-channel read: persona-aware, tier-scoped (`stm`/`mtm`/`ltm`), channel-selectable |
 | `consolidate(...)` | Trigger MTM→LTM distillation: extract bi-temporal facts, apply invalidate-don't-delete supersession |
 | `ask(question, ...)` | Synthesize an answer over recalled context (raises a typed error rather than faking a degraded answer if no model is configured) |
 | `context.discover(session_id)` | Discover the context index for a session |
 
 Every call goes through one retry/timeout/trace decorator stack, with typed errors mapped from wire
-responses — `asyncio.CancelledError` always propagates untouched, never swallowed by a broad except.
+responses. `asyncio.CancelledError` always propagates untouched, never swallowed by a broad except.
 
 ## Quickstart
 
 `mu-sdk-python` isn't on PyPI yet (the package name will be `mu-sdk`), and its `mu-contracts`
 dependency is currently a relative path dependency onto the sibling `mu-core` repo rather than a
-published version — an honest rough edge of pre-release, multi-repo development. For now:
+published version, an honest rough edge of pre-release, multi-repo development. For now:
 
 ```bash
 git clone https://github.com/MemoryUniverse/mu-core
@@ -70,19 +70,26 @@ asyncio.run(main())
 ### Honest note on what you can run today
 
 `base_url` above has to point at something speaking `mu-server`'s wire contract. The public, hosted
-`mu-server` is not open yet — it's the part of Memory Universe still in private beta. What exists
+`mu-server` is not open yet; it's the part of Memory Universe still in private beta. What exists
 today: a real conformance HTTP server this SDK is tested against (byte-for-byte, alongside
 `mu-sdk-js`, so both SDKs are provably wire-compatible), and internal LangGraph demo agents that use
 this exact client against a local reference server backed by `mu-core`'s engine. If you want to use
 `mu-sdk-python` for real right now, the practical path is running your own server that implements
-the same contract (`mu-core`'s `mu-engine` is the open reference implementation) — or waiting for
+the same contract (`mu-core`'s `mu-engine` is the open reference implementation), or waiting for
 the hosted plane's private beta.
 
 ## Architecture, in one paragraph
 
-`MemoryClient` wraps an `httpx`-based `Transport` behind a fixed pipeline — trace, then an overall
+```mermaid
+flowchart LR
+    App["Your app"] --> SDK["mu-sdk-python"]
+    SDK --> Wire["Wire<br/>REST / MCP / Centrifugo"]
+    Wire --> Srv["mu-server<br/>(not public yet)"]
+```
+
+`MemoryClient` wraps an `httpx`-based `Transport` behind a fixed pipeline: trace, then an overall
 wall-clock timeout that's generous enough to cover every retry attempt, then bounded retry with
-backoff — so every public verb funnels through one request choke-point that raises a typed SDK
+backoff, so every public verb funnels through one request choke-point that raises a typed SDK
 error on any non-2xx response before the retry logic ever sees it. Request/response bodies are
 pydantic models shared conceptually with `mu-sdk-js`'s zod schemas, so both SDKs stay provable
 mirrors of the same wire contract rather than independently-maintained guesses.
@@ -90,21 +97,16 @@ mirrors of the same wire contract rather than independently-maintained guesses.
 ## License
 
 Apache-2.0 (see `LICENSE`). Open-core: this SDK, `mu-core`, and `mu-client` are fully open and stay
-full-quality. `mu-server` — the hosted, multi-tenant, governed plane this SDK talks to — is the
+full-quality. `mu-server`, the hosted, multi-tenant, governed plane this SDK talks to, is the
 commercial product built on top; it doesn't exist in this repo and isn't required to read or build
 this code.
 
-## Support the vision
+## Background
 
-Memory Universe is independent, early-stage work — the productization of about a year of the
-founder's graduation-thesis research into multi-user agentic memory. No funding round, no company,
-no customers yet — an engineer building the open memory layer he believes agent-building teams will
-need, in public.
-
-If you're building on agent memory and want to back an open, governance-first SDK before its
-hosted counterpart even ships: sponsorship goes toward keeping this SDK (and the rest of
-the open stack) maintained, documented, and feature-complete for when `mu-server`'s beta opens. No
-perks — just an honest, pre-revenue ask.
+Memory Universe is independent, early-stage work: the productization of about a year of the
+founder's graduation-thesis research into multi-user agentic memory. No company and no customers
+yet. Just an engineer building the open memory layer he believes agent-building teams will need, in
+public.
 
 ## Contact
 
