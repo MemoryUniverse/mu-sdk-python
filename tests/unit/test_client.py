@@ -11,12 +11,13 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
+from mu_contracts.contracts.views import ConsolidateView
 from mu_contracts.domain.errors import PlaneFieldRejectedError
 from mu_contracts.domain.model.memory import Visibility
 
 from mu_sdk.client import MemoryClient
 from mu_sdk.errors import SurfaceVerbNotImplementedError
-from mu_sdk.models.consolidate import AskResult, ConsolidateResult
+from mu_sdk.models.consolidate import AskResult
 from mu_sdk.models.context import ContextView
 from mu_sdk.models.memory import MemoryResponse, MemoryWriteResult
 from mu_sdk.settings import SdkIdentity, SdkSettings
@@ -68,6 +69,10 @@ def _transport(json_body: dict[str, Any]) -> _RecordingTransport:
 
 
 async def test_consolidate_posts_to_the_net_new_route_with_the_limit_body() -> None:
+    """R2: `consolidate()` now returns the canonical `ConsolidateView` (R0's "A4 winner") — this
+    canned transport still returns the OLD legacy shape (`generated_at`, no `noop`), proving the
+    fallback parse in `_parse_consolidate_response` remaps it transparently (`noop=0`, since that
+    legacy shape never tracked NOOP actions)."""
     now = datetime.now(UTC).isoformat()
     transport: Transport = _transport(
         {"facts_extracted": 2, "added": 1, "superseded": 1, "generated_at": now}
@@ -75,8 +80,9 @@ async def test_consolidate_posts_to_the_net_new_route_with_the_limit_body() -> N
     async with MemoryClient(settings=_settings(), transport=transport) as client:
         result = await client.consolidate(limit=25)
 
-    assert isinstance(result, ConsolidateResult)
+    assert isinstance(result, ConsolidateView)
     assert result.superseded == 1
+    assert result.noop == 0
     recorded = transport.calls  # type: ignore[attr-defined]
     assert recorded[0]["method"] == "POST"
     assert recorded[0]["path"] == "/v1/memories/consolidate"

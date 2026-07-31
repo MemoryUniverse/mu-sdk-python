@@ -396,7 +396,13 @@ class EmbeddedTransport:
     async def _recall(self, body: dict[str, Any], query: dict[str, Any]) -> TransportResponse:
         from mu_engine.storage.domain.memory import MemoryTier
 
-        tier_param = query.get("tier")
+        # R2 (mu-sdk-python client.py reconciliation): the private-plane wire path now sends
+        # `tier` as a canonical `RecallRequest` BODY field (matching the real mu-engine-server's
+        # own route, which has no `?tier=` query param at all) instead of a query param — this
+        # class's own route table previously only checked `query.get("tier")` (the legacy/shared
+        # wire shape's convention). Both are checked here (body first) so this class keeps working
+        # regardless of which of the two shapes a caller's `MemoryClient` instance is sending.
+        tier_param = body.get("tier") or query.get("tier")
         tier = MemoryTier(tier_param) if tier_param else None
         result = await self._memory.recall(
             body["text"],
@@ -416,8 +422,16 @@ class EmbeddedTransport:
         return TransportResponse(status_code=200, json_body=payload)
 
     async def _build_context(self, body: dict[str, Any]) -> TransportResponse:
+        # R2 (mu-sdk-python client.py reconciliation): the private-plane wire path now sends the
+        # query text under the canonical `ContextWindowRequest.query` field name (matching the
+        # real mu-engine-server's own schema) instead of `text` — accept either key so this class
+        # keeps working regardless of which of the two wire shapes a caller's `MemoryClient`
+        # instance is sending (`query` is the current/canonical key; `text` kept for the
+        # not-yet-migrated legacy/shared wire shape, which never reaches this transport today but
+        # costs nothing to still accept).
+        query_text: str = body.get("query") or body["text"]
         result = await self._memory.context(
-            body["text"],
+            query_text,
             limit=body.get("limit", 10),
             max_chars=body.get("max_chars"),
         )

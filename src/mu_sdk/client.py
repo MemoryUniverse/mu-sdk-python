@@ -16,16 +16,65 @@ wrapped by the retry/timeout/trace decorator stack (`mu_sdk.decorators`), with a
 via `mu_sdk.error_mapping` on any non-2xx response; `promote`/`demote` make no wire call at all
 (nothing to call yet — see their own docstrings).
 
-**Plane-gating (design §2.5 "Unified verb surface"; build-plan Stage B ruling 1).** `add`/`recall`/
-`build_context`/`share` accept the canonical superset signature's plane-gated kwargs
-(`user`/`session`/`agent` — private-plane; `visibility`/`subject`/`predicate`/`object` — shared-
-plane), validated by `mu_contracts.validation.plane_gate.validate_plane_fields` — the SAME
-validator `LocalMemory` (mu-local, B1) calls, so a field supplied for a plane this class has not
-configured is REJECTED (`PlaneFieldRejectedError`), never silently dropped or accepted-and-ignored.
-`MemoryClient` today has NO `SdkConfig.mode` toggle (Stage D, design §3) to select a private plane
-— it is unconditionally the SHARED-plane wire client, so every private-plane field is honestly
-rejected until Stage D wires a real toggle through (see the module-level `_PRIVATE_PLANE_CONFIGURED`
-constant below).
+**R2 wire-contract reconciliation (SDK<->mu-engine-server, `2026-07-31-sdk-engine-server-design.md`
+§2.5).** `add`/`recall`/`get`/`build_context`/`consolidate` each now build TWO possible wire shapes,
+selected by `self._private_configured` (see below):
+
+- **Private-plane path** (`self._private_configured` — `SdkConfig.mode in ("embedded",
+  "local_server")`): builds the CANONICAL `mu_contracts.contracts.requests.*` model (R0) and
+  projects it onto the route/field-set the REAL `mu-engine-server` accepts TODAY (verified against
+  `mu_engine_server/routes/memories.py`+`.../context.py`, `mu_engine_server/schemas.py`, and
+  `mu_engine/surface/facade.py::SurfaceFacade` directly, not guessed) — `POST /memories`
+  {content,user,session}, `POST /v1/memories/recall` {text,user,session,tier,limit} (`tier` is a
+  BODY field here, NOT a query param — the real server's route has no `tier=` query param at all,
+  unlike the legacy path below), `GET /memories/{id}?user=&session=`, `POST /v1/context/window`
+  {query,user,session,limit,max_chars}, `POST /v1/memories/consolidate` {user,session,limit}.
+  Response parsing tries the canonical DTO the real server actually returns
+  (`MemoryWriteResult`/`ConsolidateView` directly, per `response_model=`), falling back to the
+  legacy full-row/`generated_at` shape ONLY for backends that have not caught up yet
+  (`EmbeddedTransport`'s own fabricated payloads — see `_parse_add_response`/
+  `_parse_consolidate_response` below for exactly which two shapes each tries and why).
+- **Shared/legacy path** (`self._private_configured is False` — no `config=`, or
+  `SdkConfig(mode="remote")`): BYTE-IDENTICAL to this class's pre-R2 behavior (the shape
+  `tests/conformance_server/app.py` and every existing conformance/unit test already exercise) —
+  `visibility`/`subject`/`predicate`/`object`/`tier`/`importance_score`/`metadata` on `add`,
+  `?tier=` as a QUERY param on `recall`, `/v1/memories/{id}` (not `/memories/{id}`) on `get`,
+  `{"text": ...}` (not `{"query": ...}`) on `build_context`. No behavior change for an existing
+  caller that does not pass `config=`.
+
+The canonical superset (R0) declares a FEW fields (`agent` on `add`/`recall`;
+`channels`/`mode`/`persona`/`max_tokens`/`correlation_id` on `recall`; `tier`/`importance_score`/
+`metadata`/`visibility`/`subject`/`predicate`/`object` on `add`) the real `mu-engine-server` has no
+engine-side counterpart for YET (`SurfaceFacade.add`/`.recall` — read directly, both take only
+`content|query, user, session[, tier, limit]`, nothing else). These stay on the PUBLIC method
+signature (forward-compat / surface parity with `LocalMemory`) and are validated by
+`validate_plane_fields`, but are NOT included in the private-plane wire dump — a documented,
+tracked gap (R0's own docstring flags the identical gap from the request-contract side), never a
+silent invention of server-side support that does not exist.
+
+**Plane-gating (design §2.5 "Unified verb surface"; build-plan Stage B ruling 1, extended by R2).**
+`add`/`recall`/`build_context`/`get`/`consolidate`/`share` accept the canonical superset
+signature's plane-gated kwargs (`user`/`session`/`agent` — private-plane; `visibility`/`subject`/
+`predicate`/`object` — shared-plane), validated by `mu_contracts.validation.plane_gate.
+validate_plane_fields` — the SAME validator `LocalMemory` (mu-local, B1) calls, so a field supplied
+for a plane this INSTANCE has not configured is REJECTED (`PlaneFieldRejectedError`), never
+silently dropped or accepted-and-ignored.
+
+`self._private_configured`/`self._shared_configured` are resolved ONCE, in `__init__`, from
+`config.mode` (`"embedded"`/`"local_server"` -> a private plane is configured; `"remote"`, or a
+populated `config.shared`, -> a shared plane is configured) — the per-instance state
+`mu_sdk.config.SdkConfig`'s own docstring names as the follow-on the module-level
+`_PRIVATE_PLANE_CONFIGURED`/`_SHARED_PLANE_CONFIGURED` constants below were left for ("D1 stores
+this value on the client for a future stage to wire; it has no effect yet"). R2 is that stage: a
+caller who never passes `config=` (every existing `settings=`/`transport=` construction, including
+every current unit/integration test) gets EXACTLY the old module-level constants below
+(`private_configured=False, shared_configured=True` — "unconditionally the SHARED-plane wire
+client") as its per-instance default, so nothing that already worked changes; a caller who DOES
+pass `config=SdkConfig(mode="embedded"|"local_server", ...)` now genuinely gains a private plane
+(`user=`/`session=`/`agent=` accepted, `visibility=`/etc. rejected), and `mode="remote"` genuinely
+gains a shared plane exactly as `config="remote"` implies — the dispatch this task's own
+verification requires (`client.add(content, user=, session=)` succeeding over `mode="local_server"`
+is impossible without this).
 
 Cancellation (DEV-STANDARDS rule 1): every await here is a direct `await` with no surrounding
 `except Exception`/`except BaseException` — `asyncio.CancelledError` propagates untouched through
@@ -39,23 +88,33 @@ from __future__ import annotations
 from types import TracebackType
 from typing import Any, Self
 
+from mu_contracts.contracts.requests import AddRequest as _CanonicalAddRequest
+from mu_contracts.contracts.requests import ConsolidateRequest as _CanonicalConsolidateRequest
+from mu_contracts.contracts.requests import ContextWindowRequest as _CanonicalContextWindowRequest
+from mu_contracts.contracts.requests import GetRequest as _CanonicalGetRequest
+from mu_contracts.contracts.requests import RecallRequest as _CanonicalRecallRequest
+from mu_contracts.contracts.views import ConsolidateView
 from mu_contracts.domain.model.memory import Visibility
 from mu_contracts.validation.plane_gate import validate_plane_fields
+from pydantic import ValidationError as _PydanticValidationError
 
 from mu_sdk.auth import BearerAuth, SdkAuth, resolve_auth
 from mu_sdk.config import SdkConfig
 from mu_sdk.decorators import with_retry, with_timeout, with_trace
 from mu_sdk.error_mapping import raise_for_wire_error
 from mu_sdk.errors import AuthenticationError, NotFoundError, SurfaceVerbNotImplementedError
-from mu_sdk.models.consolidate import AskRequest, AskResult, ConsolidateRequest, ConsolidateResult
+from mu_sdk.models.consolidate import AskRequest, AskResult
+from mu_sdk.models.consolidate import ConsolidateRequest as _LegacyConsolidateRequest
+from mu_sdk.models.consolidate import ConsolidateResult as _LegacyConsolidateResult
 from mu_sdk.models.context import ContextIndexListView, ContextView
+from mu_sdk.models.memory import MemoryCreateRequest as _LegacyAddRequest
 from mu_sdk.models.memory import (
-    MemoryCreateRequest,
     MemoryListResponse,
     MemoryResponse,
     MemoryWriteResult,
 )
-from mu_sdk.models.recall import RecallChannels, RecallMode, RecallRequest, RecallResult
+from mu_sdk.models.recall import RecallChannels, RecallMode, RecallResult
+from mu_sdk.models.recall import RecallRequest as _LegacyRecallRequest
 from mu_sdk.settings import SdkSettings
 from mu_sdk.transport import (
     EmbeddedTransport,
@@ -72,12 +131,11 @@ __all__ = ["ContextApi", "MemoryClient"]
 
 _IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"  # api-mcp-surface-spec.md §2.3
 
-# Plane configuration (interim, pre-Stage-D — design §3/§4's `SdkConfig.mode` selector does not
-# exist on this class yet). `MemoryClient` today is UNCONDITIONALLY the SHARED-plane wire client:
-# it has no "embedded"/"local_server" mode toggle to gain a private plane. Every private-plane
-# field (`user`/`session`/`agent`) is therefore honestly REJECTED (design §2.5: "a rejection, not
-# a silent no-op"), never silently accepted-and-ignored, until Stage D wires a real toggle through
-# `SdkConfig`. Module-level (not per-instance) because no constructor arg controls this yet either.
+# Legacy, PRE-R2 module-level plane defaults — now used ONLY as the per-instance fallback for a
+# `MemoryClient` constructed WITHOUT `config=` (every existing `settings=`/`transport=` caller,
+# see `MemoryClient.__init__`/module docstring). `config=SdkConfig(mode=...)` resolves its own,
+# genuinely mode-dependent `_private_configured`/`_shared_configured` instead (R2) — these two
+# constants no longer govern every instance unconditionally, only the no-`config=` legacy one.
 _PRIVATE_PLANE_CONFIGURED = False
 _SHARED_PLANE_CONFIGURED = True
 
@@ -94,11 +152,11 @@ def _resolve_from_config(
     explicit `settings=`/`transport=`/`auth=` argument always wins over what `config=` would have
     produced (module docstring on `MemoryClient.__init__`) — this function only fills the gaps.
 
-    `config.shared` (dual-plane, design §4) is deliberately NOT consulted here — see `SdkConfig.
-    shared`'s own docstring in `mu_sdk.config` for why per-call private/shared dispatch is out of
-    D1's scope (it needs the frozen verb bodies' module-level `_PRIVATE_PLANE_CONFIGURED`/
-    `_SHARED_PLANE_CONFIGURED` constants above to become real per-instance state, which this task
-    does not touch)."""
+    `config.shared` (dual-plane, design §4) is deliberately NOT consulted here for
+    transport/auth SELECTION (a dual-plane client still has exactly one PRIVATE transport — the
+    shared plane, when populated, only ADDS accepted shared-plane fields on the wire-shape
+    dispatch in `MemoryClient.__init__`, see that method's own plane-resolution comment) — no
+    second transport is constructed here."""
     resolved_settings = settings or SdkSettings(
         base_url=config.endpoint or SdkSettings.model_fields["base_url"].get_default(),
         timeout_s=config.timeout_s,
@@ -134,6 +192,55 @@ def _resolve_from_config(
     return resolved_settings, resolved_transport, resolved_auth
 
 
+def _parse_add_response(payload: Any) -> MemoryWriteResult:
+    """`POST /memories`'s response shape genuinely differs by backend TODAY (R2 finding, a real,
+    tracked gap — not invented): the real `mu-engine-server` (`routes/memories.py`,
+    `response_model=MemoryWriteResult`) already returns the canonical write RECEIPT directly
+    (`SurfaceFacade.add` returns `MemoryWriteResult`, the route re-serializes it verbatim). The
+    legacy/shared conformance path (`tests/conformance_server/app.py::upsert_memory`) and
+    `EmbeddedTransport`'s own fabricated payload (`mu_sdk.transport.EmbeddedTransport._add`, NOT
+    edited by this task) both still return the frozen FULL-ROW `MemoryResponse` shape (Appendix
+    A.1) that predates Decision B's "add returns a receipt" ruling. Try the canonical receipt shape
+    first (the REAL server's actual shape); fall back to the full-row remap (`promoted`/
+    `tiers_written` approximated from the returned `tier`, byte-identical to this method's own
+    pre-R2 behavior) — a real parse attempt against one of the two known, verified shapes, never a
+    blind guess."""
+    try:
+        return MemoryWriteResult.model_validate(payload)
+    except _PydanticValidationError:
+        wire_response = MemoryResponse.model_validate(payload)
+        return MemoryWriteResult(
+            memory_id=wire_response.id,
+            content_hash=wire_response.content_hash,
+            promoted=wire_response.tier != "stm",
+            tiers_written=(wire_response.tier,),
+            namespace=wire_response.namespace,
+        )
+
+
+def _parse_consolidate_response(payload: Any) -> ConsolidateView:
+    """`POST /v1/memories/consolidate`'s response shape has the SAME two-shapes-today split as
+    `_parse_add_response` above, for the SAME reason: the real `mu-engine-server`
+    (`routes/memories.py`, `response_model=ConsolidateView`) already returns the canonical
+    `ConsolidateView` (`facts_extracted`/`added`/`superseded`/`noop`) directly — R0's own docstring
+    names this the "A4 winner" reconciliation this function performs. `EmbeddedTransport.
+    _consolidate` (NOT edited by this task) and the legacy conformance path both still return the
+    OLDER `{facts_extracted, added, superseded, generated_at}` shape (no `noop`, an extra
+    `generated_at` `ConsolidateView` forbids) — caught here and remapped, `noop=0` since that
+    legacy shape never tracked NOOP actions at all (never silently reinterpreted as one of the
+    other three counts)."""
+    try:
+        return ConsolidateView.model_validate(payload)
+    except _PydanticValidationError:
+        legacy = _LegacyConsolidateResult.model_validate(payload)
+        return ConsolidateView(
+            facts_extracted=legacy.facts_extracted,
+            added=legacy.added,
+            superseded=legacy.superseded,
+            noop=0,
+        )
+
+
 class ContextApi:
     """The `context` sub-client — `discover` only this phase (see `mu_sdk.models.context`
     module docstring for the tracked-gap rationale on `index`/`propose`/`inbox`/`decide`/
@@ -163,10 +270,16 @@ class MemoryClient:
     **Stage D (build-plan §5 D1) — `config=` transport selection (design §3).** Pass an
     `SdkConfig` and the constructor picks the transport FOR you from `config.mode`
     (`EmbeddedTransport`/`LocalServerTransport`/`RemoteTransport`, `mu_sdk.transport`) — the
-    "byte-identical code, config picks the transport" guarantee (design §1/§6). Every verb body
-    below (B2, frozen — this task edits ONLY this constructor / the module-level plane-gating
-    note above) then behaves identically regardless of which transport it landed on, module
-    caveats documented on `EmbeddedTransport`/`load_engine_server_token` in `mu_sdk.transport`.
+    "byte-identical code, config picks the transport" guarantee (design §1/§6).
+
+    **R2 — per-instance plane resolution (see module docstring's "Plane-gating" section).**
+    `config=`, when given, ALSO resolves this instance's `_private_configured`/
+    `_shared_configured` flags every verb body's `validate_plane_fields` call and private/legacy
+    wire-shape branch reads: `mode in ("embedded", "local_server")` -> a private plane is
+    configured; `mode == "remote"` or a populated `config.shared` -> a shared plane is configured.
+    No `config=` (the pre-R2 construction path every existing test still uses) resolves to the
+    OLD module-level constants (`_PRIVATE_PLANE_CONFIGURED=False, _SHARED_PLANE_CONFIGURED=True`)
+    — unchanged behavior for every caller that predates this task.
 
     `settings=`/`transport=`/`auth=` remain fully independent, pre-Stage-D construction knobs
     (used directly by every existing unit/integration test in this package, none of which pass
@@ -187,6 +300,13 @@ class MemoryClient:
             settings, transport, auth = _resolve_from_config(
                 config, settings=settings, transport=transport, auth=auth
             )
+            # R2: a real private/shared plane, genuinely mode-dependent (module + class docstring).
+            self._private_configured = config.mode in ("embedded", "local_server")
+            self._shared_configured = config.mode == "remote" or config.shared is not None
+        else:
+            # Pre-R2 legacy default — unchanged for every caller that does not pass `config=`.
+            self._private_configured = _PRIVATE_PLANE_CONFIGURED
+            self._shared_configured = _SHARED_PLANE_CONFIGURED
         self._config = config
         self._settings = settings or SdkSettings()
         self._auth = auth or resolve_auth(self._settings)
@@ -249,11 +369,10 @@ class MemoryClient:
         self,
         content: str,
         *,
-        visibility: Visibility = Visibility.SHARED,
-        tier: str = "stm",
-        importance_score: float = 0.5,
+        visibility: Visibility | None = None,
+        tier: str | None = None,
+        importance_score: float | None = None,
         idempotency_key: str | None = None,
-        local_memory_id: str | None = None,
         subject: str | None = None,
         predicate: str | None = None,
         object: str | None = None,  # matches the frozen wire field name (Appendix A.1) exactly
@@ -262,29 +381,35 @@ class MemoryClient:
         session: str | None = None,
         agent: str | None = None,
     ) -> MemoryWriteResult:
-        """`POST /memories` (api-mcp-surface-spec.md §4.3; Appendix A.1). Shared `POST /memories`
-        rejects `visibility=PRIVATE` server-side (`app.py:1690`) — the SDK has no
-        private-to-shared leak path; a PRIVATE write raises `PrivateDataRejectedError`
+        """`POST /memories` (api-mcp-surface-spec.md §4.3; Appendix A.1 for the legacy/shared wire
+        shape; design §2.5 for the private-plane one — see module docstring's "R2 wire-contract
+        reconciliation" section for exactly which fields reach which wire).
+
+        `visibility`/`tier`/`importance_score` now default to `None` (were `Visibility.SHARED`/
+        `"stm"`/`0.5`) so the canonical superset's "omitted -> not sent, plane/backend decides"
+        discipline (`mu_contracts.contracts.requests.AddRequest`'s own docstring) applies uniformly
+        — on the SHARED/legacy path this method still resolves an omitted `visibility` to
+        `Visibility.SHARED` internally (byte-identical outgoing wire body to before); an omitted
+        `tier`/`importance_score` is simply not sent (the legacy conformance server already
+        defaults them itself, `body.get("tier", "stm")`, so this is not an observable behavior
+        change either — verified against that server directly before writing this).
+
+        Shared `POST /memories` rejects `visibility=PRIVATE` server-side (`app.py:1690`) — the
+        SDK has no private-to-shared leak path; a PRIVATE write raises `PrivateDataRejectedError`
         (`mu_sdk.error_mapping`), it is never silently coerced to SHARED.
 
         `idempotency_key`, when given, is sent as the `Idempotency-Key` HEADER (api-mcp-
-        surface-spec.md §2.3 write-idempotency contract) — never duplicated into the JSON body.
+        surface-spec.md §2.3 write-idempotency contract) — never duplicated into the JSON body,
+        on EITHER wire path.
 
         **Return DTO is `MemoryWriteResult`** (design §2.5 "Return DTOs", `SDK-BUILD-DECISIONS.md`
-        Decision B) — a write RECEIPT, not the full row (`get()`/`share()` return
-        `MemoryResponse` for that). The wire's `POST /memories` HTTP body is UNCHANGED (still the
-        frozen `MemoryResponse` shape, Appendix A.1, CANONICAL-CONTRACTS.md untouched); this
-        method maps that response DOWN to the receipt: `memory_id<-id`, `content_hash<-
-        content_hash`, `namespace<-namespace`. `promoted`/`tiers_written` are NOT on the wire
-        body, so they are approximated client-side (`promoted <- tier != "stm"`, `tiers_written <-
-        (tier,)`, the terminal tier written) — a documented approximation (Decision B's
-        "Wire-transport note"), never a silent invention. `events_emitted` stays the receipt's
-        default `()` (the wire body carries no event list either).
+        Decision B) — see `_parse_add_response`'s own docstring for the two response shapes this
+        method now transparently accepts.
 
-        `user`/`session`/`agent` (design §2.5's private-plane fields) are accepted on this
-        signature for surface parity with `LocalMemory.add` but are validated via
-        `validate_plane_fields` and ALWAYS REJECTED today (see the module-level
-        `_PRIVATE_PLANE_CONFIGURED` note) — this class has no private plane until Stage D.
+        `user`/`session`/`agent` (design §2.5's private-plane fields) and `visibility`/`subject`/
+        `predicate`/`object` (shared-plane fields) are validated via `validate_plane_fields`
+        against THIS INSTANCE's `_private_configured`/`_shared_configured` (module docstring) —
+        rejected, never silently dropped, when the field's plane is not configured.
         """
         validate_plane_fields(
             {
@@ -296,35 +421,61 @@ class MemoryClient:
                 "predicate": predicate,
                 "object": object,
             },
-            private_configured=_PRIVATE_PLANE_CONFIGURED,
-            shared_configured=_SHARED_PLANE_CONFIGURED,
+            private_configured=self._private_configured,
+            shared_configured=self._shared_configured,
         )
-        request = MemoryCreateRequest(
+        headers = {_IDEMPOTENCY_KEY_HEADER: idempotency_key} if idempotency_key else None
+
+        if self._private_configured:
+            # Canonical superset request (R0) — but the REAL mu-engine-server's own schema/facade
+            # (verified directly: mu_engine_server/schemas.py::AddRequest,
+            # mu_engine/surface/facade.py::SurfaceFacade.add) accept only content/user/session
+            # TODAY. `agent`/`visibility`/`subject`/`predicate`/`object`/`tier`/`importance_score`/
+            # `metadata` have no engine-side counterpart on this plane yet — constructed on the
+            # canonical model (so plane-gating/typing sees the full superset) but excluded from
+            # THIS wire dump via `include=`, a documented, tracked gap (R0's own docstring flags
+            # the identical gap from the request-contract side), never a silent invention of
+            # server-side support that does not exist.
+            request = _CanonicalAddRequest(
+                content=content,
+                user=user,
+                session=session,
+                agent=agent,
+                visibility=visibility,
+                subject=subject,
+                predicate=predicate,
+                object=object,
+                tier=tier,  # type: ignore[arg-type]  # validated by AddRequest's Literal
+                importance_score=importance_score,
+                metadata=metadata,
+            )
+            body = request.model_dump(
+                mode="json", include={"content", "user", "session"}, exclude_none=True
+            )
+            response = await self._execute(
+                "POST", "/memories", json_body=body, headers=headers
+            )
+            return _parse_add_response(response.json_body)
+
+        # ---- shared/legacy wire path — byte-identical to this method's pre-R2 behavior ----
+        effective_visibility = visibility if visibility is not None else Visibility.SHARED
+        legacy_request = _LegacyAddRequest(
             content=content,
-            visibility=visibility,
-            tier=tier,  # type: ignore[arg-type]  # validated by MemoryCreateRequest's Literal
-            importance_score=importance_score,
-            local_memory_id=local_memory_id,
+            visibility=effective_visibility,
+            tier=tier or "stm",  # type: ignore[arg-type]  # validated by MemoryCreateRequest's Literal
+            importance_score=importance_score if importance_score is not None else 0.5,
             subject=subject,
             predicate=predicate,
             object=object,
             metadata=metadata or {},
         )
-        headers = {_IDEMPOTENCY_KEY_HEADER: idempotency_key} if idempotency_key else None
         response = await self._execute(
             "POST",
             "/memories",
-            json_body=request.model_dump(mode="json", exclude_none=True),
+            json_body=legacy_request.model_dump(mode="json", exclude_none=True),
             headers=headers,
         )
-        wire_response = MemoryResponse.model_validate(response.json_body)
-        return MemoryWriteResult(
-            memory_id=wire_response.id,
-            content_hash=wire_response.content_hash,
-            promoted=wire_response.tier != "stm",
-            tiers_written=(wire_response.tier,),
-            namespace=wire_response.namespace,
-        )
+        return _parse_add_response(response.json_body)
 
     # ---- read ----
 
@@ -337,7 +488,10 @@ class MemoryClient:
     ) -> MemoryListResponse:
         """`GET /memories?query=&limit=&tier=` — the simple ranked-list read (mem0 muscle-memory
         verb name; api-mcp-surface-spec.md §4.3 `GET /memories`/`GET /memories/recall` (local)
-        row). For channel/mode/persona control use `.recall()` instead."""
+        row). For channel/mode/persona control use `.recall()` instead.
+
+        Untouched by R2 (out of the 5-verb reconciliation scope; the real `mu-engine-server` has
+        no `GET /memories` search route yet — a separate, pre-existing gap)."""
         params: dict[str, Any] = {
             "query": query,
             "limit": limit if limit is not None else self._settings.default_page_limit,
@@ -365,27 +519,59 @@ class MemoryClient:
         """`POST /v1/memories/recall` — the MU-canonical rich multi-channel read
         (recall-service-design.md §1.1; see `mu_sdk.models.recall` module docstring for the
         wire-route rationale). Tenancy (`namespace`) is resolved server-side from the auth
-        identity, never sent by the client (see that same module docstring).
+        identity on the shared/legacy path, or from `user=`/`session=` on the private-plane path.
 
-        `tier` (net-new this phase: `"stm"|"mtm"|"ltm"`), when given, is sent as the `?tier=`
-        QUERY param (not a body field) and always wins server-side over `channels` — tier-SCOPED
-        recall narrowed to exactly one real channel (the demo server's `_effective_tier_filter`).
-        `None` (the default) leaves channel selection to `channels`/`mode` as before — no
-        behaviour change for an existing caller that doesn't pass `tier`.
+        **Private-plane path** (`self._private_configured`): `tier` travels as a canonical
+        `RecallRequest` BODY field (`mu_engine_server/schemas.py::RecallRequest.tier` — the real
+        server's route has NO `?tier=` query param at all, verified directly against
+        `mu_engine_server/routes/memories.py::recall_memories`), narrowing to exactly one real
+        channel. `channels`/`mode`/`persona`/`max_tokens`/`correlation_id` are accepted on this
+        signature for forward-compat but have no engine-side counterpart yet (same documented gap
+        as `add()`'s `tier`/`importance_score`/`metadata`) — not sent on this wire.
 
-        `user`/`session`/`agent` (design §2.5's private-plane fields, net-new this phase) are
-        accepted on this signature for surface parity with `LocalMemory.recall` but are validated
-        via `validate_plane_fields` and ALWAYS REJECTED today — see `add()`'s docstring / the
-        module-level `_PRIVATE_PLANE_CONFIGURED` note for why."""
+        **Shared/legacy path**: byte-identical to this method's pre-R2 behavior — `tier`, when
+        given, is sent as the `?tier=` QUERY param (not a body field) and always wins server-side
+        over `channels`; `None` (the default) leaves channel selection to `channels`/`mode` as
+        before, no behavior change for an existing caller that doesn't pass `tier`.
+
+        `user`/`session`/`agent` (design §2.5's private-plane fields) are validated via
+        `validate_plane_fields` against this instance's configured plane(s) — see `add()`'s
+        docstring / the module docstring's "Plane-gating" section."""
         validate_plane_fields(
             {"user": user, "session": session, "agent": agent},
-            private_configured=_PRIVATE_PLANE_CONFIGURED,
-            shared_configured=_SHARED_PLANE_CONFIGURED,
+            private_configured=self._private_configured,
+            shared_configured=self._shared_configured,
         )
-        request = RecallRequest(
+        effective_limit = limit if limit is not None else self._settings.default_recall_limit
+        effective_channels = channels or RecallChannels()
+
+        if self._private_configured:
+            request = _CanonicalRecallRequest(
+                text=text,
+                user=user,
+                session=session,
+                agent=agent,
+                tier=tier,  # type: ignore[arg-type]  # validated by RecallRequest's Literal
+                limit=effective_limit,
+                channels=effective_channels,
+                mode=mode,
+                persona=persona,
+                max_tokens=max_tokens,
+                correlation_id=correlation_id,
+            )
+            body = request.model_dump(
+                mode="json",
+                include={"text", "user", "session", "tier", "limit"},
+                exclude_none=True,
+            )
+            response = await self._execute("POST", "/v1/memories/recall", json_body=body)
+            return RecallResult.model_validate(response.json_body)
+
+        # ---- shared/legacy wire path — byte-identical to this method's pre-R2 behavior ----
+        legacy_request = _LegacyRecallRequest(
             text=text,
-            limit=limit if limit is not None else self._settings.default_recall_limit,
-            channels=channels or RecallChannels(),
+            limit=effective_limit,
+            channels=effective_channels,
             mode=mode,
             persona=persona,
             max_tokens=max_tokens,
@@ -396,24 +582,55 @@ class MemoryClient:
             "POST",
             "/v1/memories/recall",
             params=params,
-            json_body=request.model_dump(mode="json", exclude_none=True),
+            json_body=legacy_request.model_dump(mode="json", exclude_none=True),
         )
         return RecallResult.model_validate(response.json_body)
 
-    async def get(self, memory_id: str) -> MemoryResponse | None:
-        """`GET /v1/memories/{memory_id}` (net-new this phase, design §2.5: "`get` — kept, exists
-        only on `LocalMemory` today — TO BUILD on the wire/`MemoryClient` side so both transports
-        expose it"). No frozen route is pinned for a single-memory GET in Appendix A.1, so this
-        targets the placeholder path this phase's conformance server also implements (see
-        `tests/conformance_server/app.py`), matching the established `/v1`-prefixed convention for
-        every other net-new route in this class.
+    async def get(
+        self,
+        memory_id: str,
+        *,
+        user: str | None = None,
+        session: str | None = None,
+    ) -> MemoryResponse | None:
+        """Point-get one memory by id. **Private-plane path** (`self._private_configured`):
+        `GET /memories/{memory_id}?user=&session=` — the REAL `mu-engine-server`'s actual route
+        (`mu_engine_server/routes/memories.py::get_memory`, verified directly), `user=`/`session=`
+        as query params, never a body. **Shared/legacy path**: `GET /v1/memories/{memory_id}`, no
+        query params — byte-identical to this method's pre-R2 behavior (the placeholder route
+        `tests/conformance_server/app.py` implements; no frozen route was pinned for a single-
+        memory GET in Appendix A.1 when this verb was first added).
+
+        `user`/`session` are validated via `validate_plane_fields` exactly like every other
+        private-plane field on this class — see `add()`'s docstring.
 
         Returns `None` on a 404 (not-found) rather than raising `NotFoundError` — a point-get miss
         is a perfectly normal outcome, mirroring `LocalMemory.get`'s `| None` miss signal
         (`SDK-BUILD-DECISIONS.md` Decision B: "keep the `| None` miss signal that embedded `get`
         already returns")."""
+        validate_plane_fields(
+            {"user": user, "session": session},
+            private_configured=self._private_configured,
+            shared_configured=self._shared_configured,
+        )
+        # Canonical shape-validation (R0) — `GetRequest` is projected onto path/query params by
+        # design (its own docstring: "construct it, then project its fields onto whichever
+        # transport-specific locations the calling code needs"), never dumped as a JSON body.
+        _CanonicalGetRequest(memory_id=memory_id, user=user, session=session)
+
+        if self._private_configured:
+            path = f"/memories/{memory_id}"
+            params: dict[str, Any] | None = {
+                key: value
+                for key, value in {"user": user, "session": session}.items()
+                if value is not None
+            } or None
+        else:
+            path = f"/v1/memories/{memory_id}"
+            params = None
+
         try:
-            response = await self._execute("GET", f"/v1/memories/{memory_id}")
+            response = await self._execute("GET", path, params=params)
         except NotFoundError:
             return None
         return MemoryResponse.model_validate(response.json_body)
@@ -427,11 +644,21 @@ class MemoryClient:
         limit: int | None = None,
         max_chars: int | None = None,
     ) -> ContextView:
-        """`POST /v1/context/window` (design §2.5 REVIEW-2 FIX 1; §2 of
-        `2026-07-31-sdk-engine-server-design.md`'s route inventory pins this exact placeholder
-        path) — `LocalMemory.context(...)`'s WIRE TWIN: the PRIVATE-plane context-*WINDOW* helper
-        (deterministic recall + render, NO LLM synthesis, `mu_local.views.ContextView`'s
-        `SDK-BUILD-DECISIONS.md` Decision B rationale).
+        """`POST /v1/context/window` (design §2.5 REVIEW-2 FIX 1) — `LocalMemory.context(...)`'s
+        WIRE TWIN: the PRIVATE-plane context-*WINDOW* helper (deterministic recall + render, NO
+        LLM synthesis, `mu_local.views.ContextView`'s `SDK-BUILD-DECISIONS.md` Decision B
+        rationale).
+
+        **Private-plane path** (`self._private_configured`): the query-text field is named
+        `query` on the wire — the REAL `mu-engine-server`'s actual field name
+        (`mu_engine_server/schemas.py::ContextWindowRequest.query`, verified directly; also R0's
+        own "Field-name decisions" ruling: "`build_context`'s query text is named `query`, not
+        `text`... the ONE genuine cross-field-name bug this task's context pack flags"). This
+        method's own PUBLIC parameter stays named `text` (API stability / consistency with
+        `recall(text, ...)`) — only the WIRE body field changes.
+
+        **Shared/legacy path**: byte-identical to this method's pre-R2 behavior — `{"text": ...}`
+        on the wire, matching `tests/conformance_server/app.py`'s placeholder route.
 
         **Not the same verb as `.context.discover(...)`** (`ContextApi`, above) — REVIEW-2 FIX 1
         (BLOCKER) is explicit that collapsing these two is unbuildable: they take different
@@ -444,19 +671,28 @@ class MemoryClient:
 
         `user`/`session` are the private-plane fields this verb inherently needs (mirrors
         `LocalMemory.context`'s own signature) — plane-gated exactly like `add`/`recall`'s
-        `user`/`session`/`agent` (module-level `_PRIVATE_PLANE_CONFIGURED` note): always rejected
-        today, since this class has no private plane until Stage D wires one through. They are
-        never sent as wire body fields (tenancy is header/auth-derived, same rule as every other
-        verb) — a caller that supplies either is rejected before any request is built."""
+        `user`/`session`/`agent`."""
         validate_plane_fields(
             {"user": user, "session": session},
-            private_configured=_PRIVATE_PLANE_CONFIGURED,
-            shared_configured=_SHARED_PLANE_CONFIGURED,
+            private_configured=self._private_configured,
+            shared_configured=self._shared_configured,
         )
-        request_body: dict[str, Any] = {
-            "text": text,
-            "limit": limit if limit is not None else self._settings.default_recall_limit,
-        }
+        effective_limit = limit if limit is not None else self._settings.default_recall_limit
+
+        if self._private_configured:
+            request = _CanonicalContextWindowRequest(
+                query=text,
+                user=user,
+                session=session,
+                limit=effective_limit,
+                max_chars=max_chars,
+            )
+            body = request.model_dump(mode="json", exclude_none=True)
+            response = await self._execute("POST", "/v1/context/window", json_body=body)
+            return ContextView.model_validate(response.json_body)
+
+        # ---- shared/legacy wire path — byte-identical to this method's pre-R2 behavior ----
+        request_body: dict[str, Any] = {"text": text, "limit": effective_limit}
         if max_chars is not None:
             request_body["max_chars"] = max_chars
         response = await self._execute("POST", "/v1/context/window", json_body=request_body)
@@ -469,18 +705,20 @@ class MemoryClient:
         verbatim by design §4's dual-plane worked example, which calls this exact method:
         `mem.share(result.memory_id, visibility="shared")`).
 
+        Untouched by R2 (out of the 5-verb reconciliation scope; the real `mu-engine-server` has
+        no `/share` route yet — a separate, pre-existing gap, same as `search()`/`ask()`).
+
         Shared-plane-gated (`visibility` is one of B0's `SHARED_PLANE_FIELDS`) — a no-op guard
-        today since this class is unconditionally shared-plane-configured
-        (`_SHARED_PLANE_CONFIGURED`, module-level note), but becomes load-bearing the moment
-        Stage D lets a caller construct a `shared=None` (shared-plane-NOT-configured) client.
+        on the legacy/shared-configured default, but load-bearing the moment a caller constructs a
+        private-only (`shared_configured=False`) client via `config=`.
 
         Returns `MemoryResponse` (design §2.5, already pinned — "already fixed", Decision B: "not
         a new decision") — the full row, consistent with `get()` also returning the full row for
         the same "this is a read of settled state, not a write receipt" reason."""
         validate_plane_fields(
             {"visibility": visibility},
-            private_configured=_PRIVATE_PLANE_CONFIGURED,
-            shared_configured=_SHARED_PLANE_CONFIGURED,
+            private_configured=self._private_configured,
+            shared_configured=self._shared_configured,
         )
         response = await self._execute(
             "POST",
@@ -524,24 +762,54 @@ class MemoryClient:
             status_code=501,
         )
 
-    async def consolidate(self, *, limit: int = 50) -> ConsolidateResult:
-        """`POST /v1/memories/consolidate` (net-new this phase) — MTM->LTM DISTILL: extracts
-        bi-temporal SPO facts from the recent STM/MTM window and writes them into the LTM graph,
-        applying invalidate-don't-delete SUPERSESSION (the MemGC/Phi headline capability).
-        Tenancy is resolved server-side from the auth identity, same as every other verb."""
-        request = ConsolidateRequest(limit=limit)
-        response = await self._execute(
-            "POST",
-            "/v1/memories/consolidate",
-            json_body=request.model_dump(mode="json", exclude_none=True),
+    async def consolidate(
+        self,
+        *,
+        user: str | None = None,
+        session: str | None = None,
+        limit: int = 50,
+    ) -> ConsolidateView:
+        """`POST /v1/memories/consolidate` — MTM->LTM DISTILL: extracts bi-temporal SPO facts from
+        the recent STM/MTM window and writes them into the LTM graph, applying invalidate-don't-
+        delete SUPERSESSION (the MemGC/Phi headline capability).
+
+        **Private-plane path** (`self._private_configured`): canonical `ConsolidateRequest`
+        {user,session,limit} — field-for-field identical to the REAL `mu-engine-server`'s own
+        schema (`mu_engine_server/schemas.py::ConsolidateRequest`, verified directly). **Shared/
+        legacy path**: `{"limit": ...}` only, byte-identical to this method's pre-R2 behavior —
+        tenancy resolved server-side from the auth identity, same as before.
+
+        **Return DTO is `ConsolidateView`** (R0's "A4 winner" — was `mu_sdk.models.consolidate.
+        ConsolidateResult`, a genuine, documented BREAKING CHANGE to this method's Python return
+        type: the real server already returns `ConsolidateView` directly, `noop`-carrying, no
+        `generated_at`; see `_parse_consolidate_response`'s own docstring for the two response
+        shapes this method now transparently accepts, including `EmbeddedTransport`'s own
+        not-yet-updated fabricated payload).
+
+        `user`/`session` are validated via `validate_plane_fields` exactly like every other
+        private-plane field on this class."""
+        validate_plane_fields(
+            {"user": user, "session": session},
+            private_configured=self._private_configured,
+            shared_configured=self._shared_configured,
         )
-        return ConsolidateResult.model_validate(response.json_body)
+        if self._private_configured:
+            request = _CanonicalConsolidateRequest(user=user, session=session, limit=limit)
+            body = request.model_dump(mode="json", exclude_none=True)
+        else:
+            legacy_request = _LegacyConsolidateRequest(limit=limit)
+            body = legacy_request.model_dump(mode="json", exclude_none=True)
+        response = await self._execute("POST", "/v1/memories/consolidate", json_body=body)
+        return _parse_consolidate_response(response.json_body)
 
     async def ask(self, question: str, *, limit: int | None = None) -> AskResult:
         """`POST /v1/memories/ask` (net-new this phase) — MU's own SLM-powered synthesis over
         recalled context (contrast with the raw ranked list `recall()`/`search()` return). Raises
         `ServiceUnavailableError` (mapped from the server's 503) when the server has no LLM/SLM
-        configured (heuristic mode) — never a silently-empty answer."""
+        configured (heuristic mode) — never a silently-empty answer.
+
+        Untouched by R2 (out of the 5-verb reconciliation scope; the real `mu-engine-server` has
+        no `/v1/memories/ask` route yet — a separate, pre-existing gap)."""
         request = AskRequest(
             question=question,
             limit=limit if limit is not None else self._settings.default_recall_limit,
