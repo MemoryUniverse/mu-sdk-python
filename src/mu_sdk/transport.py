@@ -368,8 +368,15 @@ class EmbeddedTransport:
     async def _add(self, body: dict[str, Any]) -> TransportResponse:
         content = body["content"]
         # visibility/subject/predicate/object are deliberately NOT forwarded — see this class's
-        # own docstring's `POST /memories` route entry for why.
-        receipt = await self._memory.add(content)
+        # own docstring's `POST /memories` route entry for why. `user`/`session` (CO-5 fix) ARE
+        # forwarded — `client.py`'s private-plane `add()` wire dump includes them
+        # (`include={"content", "user", "session"}`), and dropping them here silently collapsed
+        # every embedded-mode caller onto `LocalMemory`'s `user="default"`/`session=None`
+        # defaults regardless of the caller's actual namespace, undoing Stage-A cross-user
+        # isolation at the SDK layer. `agent` is never in `body` in the first place — `add()`'s
+        # own wire dump excludes it (no engine-side counterpart yet, same doc) — so there is
+        # nothing to forward for it.
+        receipt = await self._memory.add(content, **_user_session_kwargs(body))
         now = _now_iso()
         tier = receipt.tiers_written[-1] if receipt.tiers_written else "stm"
         payload = {
@@ -404,15 +411,25 @@ class EmbeddedTransport:
         # regardless of which of the two shapes a caller's `MemoryClient` instance is sending.
         tier_param = body.get("tier") or query.get("tier")
         tier = MemoryTier(tier_param) if tier_param else None
+        # user/session (CO-5 fix) — `client.py`'s private-plane `recall()` wire dump includes
+        # both (`include={"text", "user", "session", "tier", "limit"}`); forwarding them here
+        # keeps embedded recall scoped to the caller's own namespace instead of always reading
+        # back `LocalMemory`'s `user="default"`/`session=None` partition.
         result = await self._memory.recall(
             body["text"],
             limit=body.get("limit", 10),
             tier=tier,
+            **_user_session_kwargs(body),
         )
         return TransportResponse(status_code=200, json_body=result.model_dump(mode="json"))
 
     async def _consolidate(self, body: dict[str, Any]) -> TransportResponse:
-        result = await self._memory.consolidate(limit=body.get("limit", 50))
+        # user/session (CO-5 fix) — `client.py`'s private-plane `consolidate()` wire body is
+        # `{user, session, limit}` verbatim; forwarding keeps the DISTILL sweep scoped to the
+        # caller's own namespace instead of always sweeping `LocalMemory`'s default partition.
+        result = await self._memory.consolidate(
+            limit=body.get("limit", 50), **_user_session_kwargs(body)
+        )
         payload = {
             "facts_extracted": result.facts_extracted,
             "added": result.added,
@@ -430,15 +447,40 @@ class EmbeddedTransport:
         # not-yet-migrated legacy/shared wire shape, which never reaches this transport today but
         # costs nothing to still accept).
         query_text: str = body.get("query") or body["text"]
+        # user/session (CO-5 fix) — `client.py`'s private-plane `build_context()` wire body
+        # includes both (`_CanonicalContextWindowRequest(query=, user=, session=, ...)`);
+        # forwarding keeps the assembled context window scoped to the caller's own namespace.
         result = await self._memory.context(
             query_text,
             limit=body.get("limit", 10),
             max_chars=body.get("max_chars"),
+            **_user_session_kwargs(body),
         )
         return TransportResponse(status_code=200, json_body=result.model_dump(mode="json"))
 
     async def aclose(self) -> None:
         await self._memory.aclose()
+
+
+def _user_session_kwargs(body: dict[str, Any]) -> dict[str, Any]:
+    """CO-5 fix: pull `user`/`session` out of the HTTP-shaped request `body` so every
+    `EmbeddedTransport` route handler forwards them to `LocalMemory`, instead of silently
+    dropping them and letting every embedded-mode call land in `LocalMemory`'s own
+    `user="default"`/`session=None` defaults regardless of the caller's actual namespace
+    (the bug this function exists to close — see each call site's own comment). Only
+    includes a key when the wire body actually supplied a non-``None`` value for it, so
+    `LocalMemory`'s own defaults (`user="default"`, `session=None`) still apply exactly as
+    before for a caller that never passed `user=`/`session=` to `MemoryClient` in the first
+    place — this never forces an explicit `None` onto `LocalMemory.add`'s `user: str`
+    parameter, which has no `None` case."""
+    kwargs: dict[str, Any] = {}
+    user = body.get("user")
+    if user is not None:
+        kwargs["user"] = user
+    session = body.get("session")
+    if session is not None:
+        kwargs["session"] = session
+    return kwargs
 
 
 def _now_iso() -> str:
