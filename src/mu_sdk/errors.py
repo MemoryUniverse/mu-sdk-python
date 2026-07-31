@@ -27,6 +27,7 @@ __all__ = [
     "SdkTimeoutError",
     "ServerError",
     "ServiceUnavailableError",
+    "SurfaceVerbNotImplementedError",
     "TransientSdkError",
     "TransportError",
     "UnexpectedResponseError",
@@ -146,3 +147,19 @@ class UnexpectedResponseError(SdkError):
     """The response did not match ANY known shape (bad status code range, non-JSON body where
     JSON was expected, a missing required envelope field). Fail-loud rather than best-effort
     guessing — DEV-STANDARDS rule 8."""
+
+
+class SurfaceVerbNotImplementedError(SdkError):
+    """`promote`/`demote` have no engine/wire counterpart anywhere in the tree yet (build-queue
+    item 5; design §2.5's unified-verb-surface proposal): "the facade method raises
+    `NotImplementedError` (never a fake 200) until the engine counterpart lands"
+    (api-mcp-surface-spec.md §4.3b). `MemoryClient.promote()`/`.demote()` raise this NAMED error
+    (`status_code=501`) immediately, with NO network call — there is nothing to call. Mirrors
+    `mu_engine.surface.facade.SurfaceVerbNotImplementedError` (the embedded-side twin
+    `LocalMemory`'s `SurfaceFacade` raises for the identical reason) — a deliberate SAME-named
+    local twin, not an import, since `mu_sdk` may never import `mu_engine`
+    (PACKAGING-v2.md §5 "sdk-has-no-engine" boundary).
+
+    Also mapped here by `error_mapping.raise_for_wire_error` from a genuine wire HTTP 501, for the
+    day a real server actually serves one (Stage C) — never a silent no-op or partial success on
+    either path (DEV-STANDARDS rule 8)."""

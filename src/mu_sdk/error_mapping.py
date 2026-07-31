@@ -21,6 +21,7 @@ from mu_sdk.errors import (
     SdkError,
     ServerError,
     ServiceUnavailableError,
+    SurfaceVerbNotImplementedError,
     UnexpectedResponseError,
     ValidationError,
 )
@@ -106,6 +107,13 @@ def raise_for_wire_error(response: TransportResponse) -> None:
             status_code=status,
             retry_after_s=_parse_retry_after(response),
         )
+    elif status == 501:
+        # `promote`/`demote` (build-queue item 5) — see
+        # `mu_sdk.errors.SurfaceVerbNotImplementedError`'s docstring. `MemoryClient.promote()`/
+        # `.demote()` raise this same class client-side WITHOUT ever reaching this branch (no
+        # network call is made); this branch exists for the day a real server (Stage C) actually
+        # serves a genuine wire 501 for some other not-yet-built verb.
+        error = SurfaceVerbNotImplementedError(detail, request_id=request_id, status_code=status)
     elif status == 503:
         error = ServiceUnavailableError(
             detail,

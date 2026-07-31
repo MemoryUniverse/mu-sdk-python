@@ -102,7 +102,12 @@ def test_recall_request_is_frozen() -> None:
 
 def test_recall_result_memory_ids_projection_is_content_free() -> None:
     namespace = Namespace(
-        org="org-1", workspace="ws-1", user="u-1", session="s-1", visibility=Visibility.SHARED
+        # SHARED namespace requires user="*" (mu_contracts CANONICAL §1 rule 4)
+        org="org-1",
+        workspace="ws-1",
+        user="*",
+        session="s-1",
+        visibility=Visibility.SHARED,
     )
     item = RecallItemView(
         memory_id="mem-1",

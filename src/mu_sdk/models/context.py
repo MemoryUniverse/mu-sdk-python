@@ -17,15 +17,24 @@ are NOT implemented; a caller reaching for them gets a clear `AttributeError`, n
 `ContextIndex.object_ref` (a `ShareableRef`, governance-transfer-core-spec.md §5) and `policy` are
 therefore omitted from `ContextIndexView` below — they belong to the write-side FSM this phase does
 not build. This is a deliberate, documented reduction of the full `ContextIndex` shape, not a guess.
+
+**`ContextView` (net-new this phase, B2)** — re-exported here from `mu_contracts.contracts.views`
+(B0) — is a DIFFERENT thing from `ContextIndexView`/`ContextIndexListView` above: it is the return
+DTO for `MemoryClient.build_context(...)`, the PRIVATE-plane context-*window* helper (design §2.5
+REVIEW-2 FIX 1 — `LocalMemory.context(...)`'s wire twin, deterministic recall + render, NO LLM
+synthesis). It is grouped in this module because both are "context"-named, but they are two
+separate verbs on two separate planes — see `client.py`'s `build_context`/`ContextApi.discover`
+docstrings for the explicit "NOT the same verb" callout this mirrors.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 
+from mu_contracts.contracts.views import ContextView
 from pydantic import BaseModel, ConfigDict, Field
 
-__all__ = ["ContextIndexListView", "ContextIndexView"]
+__all__ = ["ContextIndexListView", "ContextIndexView", "ContextView"]
 
 
 class ContextIndexView(BaseModel):

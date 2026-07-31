@@ -1,33 +1,55 @@
-"""Memory DTOs — the wire shapes for `MemoryClient.add()` / `.search()`.
+"""Memory DTOs — the wire shapes for `MemoryClient.add()` / `.get()` / `.share()` / `.search()`.
 
-Authority: `api-mcp-surface-spec.md` Appendix A.1 ("frozen — `shared/api.py`"). `mu-contracts`
-ships no `contracts/rest_schema` yet (its `contracts/__init__.py` is explicitly "SCAFFOLD ONLY" —
-confirmed by reading the file directly, not taken on a tool's word), so this SDK declares its own
-pydantic mirror of the documented shape (task brief's explicit fallback: "otherwise it declares its
-own pydantic request/response models mirroring the wire contract").
+`MemoryResponse` and `MemoryWriteResult` are now CANONICAL, re-exported from
+`mu_contracts.contracts` (B0: `mu-contracts/.../contracts/memory.py`, `.../contracts/views.py`) per
+`SDK-BUILD-DECISIONS.md` Decision B ("Canonical return DTO per verb") and design §2.5 "Unified verb
+surface" — this module no longer declares its OWN duplicate `MemoryResponse` class. The duplicate
+that used to live here (pre-B2, `models/memory.py:58`) was byte-identical (confirmed by reading
+B0's re-homed copy before this edit — same 37 fields, same `extra="forbid"`, nothing added/renamed/
+dropped), so this is a pure re-home, not a reshaping. `ContentType`/`MemoryTierLiteral`/
+`PolarityLiteral` move with it (needed for `MemoryResponse`'s own field types and for
+`MemoryCreateRequest` below, which still declares its own request body — request DTOs are not part
+of Decision B's return-DTO scope).
 
-`namespace` is deliberately ABSENT from `MemoryCreateRequest`: tenancy is derived server-side from
-the resolved auth identity (`X-Demo-*` headers / bearer claims), never accepted as a client-supplied
-body field (api-mcp-surface-spec.md §2.2) — the surface is never the oracle a probe can steer.
-`MemoryResponse.namespace` is a **string** (the `to_prefix()` form), matching the Appendix A.1
-citation literally — a different subsystem-spec era than the structured `Namespace` object used on
-`RecallResult` (see `models/recall.py`); both are honored as documented rather than silently
-unified.
+**`add()`'s return DTO changed from `MemoryResponse` to `MemoryWriteResult`** (Decision B: "`add`
+is semantically a *write*; the honest return is a receipt of what happened, not a re-read of
+state" — `MemoryResponse` lacks `promoted`/`tiers_written`, the two most informative write flags,
+while `MemoryWriteResult` lacks the full row). This is a genuine, documented BREAKING CHANGE to the
+SDK's own `MemoryClient.add()` Python return type — see that method's docstring in `client.py` for
+the wire-transport derivation of `promoted`/`tiers_written` (not on the frozen `POST /memories`
+response body, so approximated client-side, never silently invented). The wire HTTP contract
+itself (Appendix A.1's `MemoryResponse` body) is UNTOUCHED — CANONICAL-CONTRACTS.md stays frozen,
+unedited; only the SDK method's Python-level return shape changes. `get()`/`share()` (net-new this
+phase) return the full-row `MemoryResponse` — Decision B's "full materialized row" bucket, distinct
+from `add`'s "write receipt" bucket.
+
+`MemoryCreateRequest` (request-only, never a per-verb RETURN DTO) and `MemoryListResponse` (the
+`.search()` list wrapper — `search()` has no canonical-winner assignment; it is the mem0-muscle-
+memory simple list verb, out of Decision B's `add`/`recall`/`get`/`build_context`/`share`/
+`consolidate` scope) stay declared here, unchanged in shape.
 """
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Literal
-
+from mu_contracts.contracts.memory import (
+    ContentType,
+    MemoryResponse,
+    MemoryTierLiteral,
+    PolarityLiteral,
+)
+from mu_contracts.contracts.views import MemoryWriteResult
 from mu_contracts.domain.model.memory import Visibility
 from pydantic import BaseModel, ConfigDict, Field
 
-__all__ = ["MemoryCreateRequest", "MemoryListResponse", "MemoryResponse"]
-
-ContentType = Literal["text", "code", "url", "image", "transcript"]
-MemoryTierLiteral = Literal["stm", "mtm", "ltm"]
-PolarityLiteral = Literal["positive", "negative"]
+__all__ = [
+    "ContentType",
+    "MemoryCreateRequest",
+    "MemoryListResponse",
+    "MemoryResponse",
+    "MemoryTierLiteral",
+    "MemoryWriteResult",
+    "PolarityLiteral",
+]
 
 
 class MemoryCreateRequest(BaseModel):
@@ -39,6 +61,13 @@ class MemoryCreateRequest(BaseModel):
     memory has to reach the server through *some* body field, and `MemoryResponse` already carries
     `subject?/predicate?/object?` back out) — documented assumption, flagged rather than silently
     guessed past.
+
+    `namespace` is deliberately ABSENT: tenancy is derived server-side from the resolved auth
+    identity (`X-Demo-*` headers / bearer claims), never accepted as a client-supplied body field
+    (api-mcp-surface-spec.md §2.2) — the surface is never the oracle a probe can steer.
+    Private-plane identity (`user`/`session`/`agent`) is likewise never a body field here — see
+    `MemoryClient.add`'s plane-gating docstring in `client.py`: those are validated and rejected
+    BEFORE this request is even constructed, never smuggled into the wire body.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -53,50 +82,6 @@ class MemoryCreateRequest(BaseModel):
     predicate: str | None = None
     object: str | None = None
     metadata: dict[str, str] = Field(default_factory=dict)
-
-
-class MemoryResponse(BaseModel):
-    """`MemoryResponse` (`api.py:38`) — the full frozen field list, Appendix A.1."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    id: str
-    content: str
-    content_type: ContentType
-    tier: MemoryTierLiteral
-    state: str
-    importance_score: float = Field(ge=0.0, le=1.0)
-    access_count: int = Field(ge=0)
-    created_at: datetime
-    updated_at: datetime
-    namespace: str  # to_prefix() string form (Appendix A.1 literal citation — see module docstring)
-    metadata: dict[str, str] = Field(default_factory=dict)
-    source: str | None = None
-    speaker_kind: str | None = None
-    speaker_id: str | None = None
-    source_id: str | None = None
-    session_id: str | None = None
-    turn_id: str | None = None
-    entity_id: str | None = None
-    asserted_state: str | None = None
-    gds_pagerank: float | None = None
-    subject: str | None = None
-    predicate: str | None = None
-    object: str | None = None
-    object_kind: str | None = None
-    object_type: str | None = None
-    object_value: str | None = None
-    polarity: PolarityLiteral | None = None
-    predicate_cardinality: str | None = None
-    valid_at: datetime | None = None
-    invalid_at: datetime | None = None
-    expires_at: datetime | None = None
-    last_seen: datetime | None = None
-    mention_count: int = Field(default=1, ge=0)
-    relevance_score: float = 0.0
-    parent_ids: list[str] = Field(default_factory=list)
-    child_ids: list[str] = Field(default_factory=list)
-    content_hash: str = ""
 
 
 class MemoryListResponse(BaseModel):

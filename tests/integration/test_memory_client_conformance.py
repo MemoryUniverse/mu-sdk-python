@@ -14,8 +14,10 @@ from mu_sdk.errors import (
     AuthenticationError,
     ConflictError,
     PrivateDataRejectedError,
+    SurfaceVerbNotImplementedError,
 )
-from mu_sdk.models.memory import MemoryResponse
+from mu_sdk.models.context import ContextView
+from mu_sdk.models.memory import MemoryResponse, MemoryWriteResult
 from mu_sdk.settings import SdkIdentity, SdkSettings
 
 pytestmark = pytest.mark.integration
@@ -40,13 +42,17 @@ def _settings(base_url: str, *, session_id: str = "session-1") -> SdkSettings:
 async def test_add_then_search_round_trips_on_the_real_wire(conformance_base_url: str) -> None:
     async with MemoryClient(settings=_settings(conformance_base_url)) as client:
         added = await client.add("the sky is blue", visibility=Visibility.SHARED)
-        assert isinstance(added, MemoryResponse)
-        assert added.content == "the sky is blue"
-        assert added.id
+        # `add()`'s return DTO is `MemoryWriteResult` (a write RECEIPT), not `MemoryResponse` (the
+        # full row) — Decision B, see `client.py`'s `add()` docstring. `found.memories[0]` below is
+        # still the full `MemoryResponse` row, since `.search()` is unaffected by that decision.
+        assert isinstance(added, MemoryWriteResult)
+        assert added.memory_id
+        assert added.tiers_written == ("stm",)  # default tier="stm" -> the terminal tier written
+        assert added.promoted is False  # tier == "stm" -> not promoted (client-side approximation)
 
         found = await client.search("sky")
         assert found.total == 1
-        assert found.memories[0].id == added.id
+        assert found.memories[0].id == added.memory_id
         assert found.memories[0].content == "the sky is blue"
 
 
@@ -72,7 +78,7 @@ async def test_idempotent_replay_returns_the_original_response(conformance_base_
     async with MemoryClient(settings=_settings(conformance_base_url)) as client:
         first = await client.add("idempotent fact", idempotency_key="key-1")
         second = await client.add("idempotent fact", idempotency_key="key-1")
-        assert first.id == second.id
+        assert first.memory_id == second.memory_id
 
 
 async def test_conflicting_idempotent_replay_raises_conflict(conformance_base_url: str) -> None:
@@ -257,3 +263,102 @@ async def test_recall_without_tier_arg_is_unchanged(conformance_base_url: str) -
 
         result = await client.recall("widget")
         assert len(result.items) == 2
+
+
+# ---- get / build_context / share / promote / demote (net-new this phase, B2, design §2.5) -----
+
+
+async def test_get_round_trips_the_full_row_after_add(conformance_base_url: str) -> None:
+    async with MemoryClient(settings=_settings(conformance_base_url)) as client:
+        added = await client.add("the sky is blue")
+
+        fetched = await client.get(added.memory_id)
+
+        assert isinstance(fetched, MemoryResponse)  # get() returns the full row, unlike add()
+        assert fetched.id == added.memory_id
+        assert fetched.content == "the sky is blue"
+
+
+async def test_get_returns_none_for_an_unknown_id(conformance_base_url: str) -> None:
+    async with MemoryClient(settings=_settings(conformance_base_url)) as client:
+        fetched = await client.get("does-not-exist")
+        assert fetched is None  # a 404 maps to None, never a raised NotFoundError (Decision B)
+
+
+async def test_get_is_tenancy_scoped_like_every_other_verb(conformance_base_url: str) -> None:
+    async with MemoryClient(settings=_settings(conformance_base_url)) as alice_client:
+        added = await alice_client.add("alice's private-ish note")
+
+    bob_settings = SdkSettings(
+        base_url=conformance_base_url,
+        identity=SdkIdentity(
+            user_id="bob", workspace_id="ws-1", namespace_id="ns-1", session_id="session-2"
+        ),
+    )
+    async with MemoryClient(settings=bob_settings) as bob_client:
+        fetched = await bob_client.get(added.memory_id)
+        assert fetched is None  # cross-tenant get() is indistinguishable from absent
+
+
+async def test_build_context_returns_ranked_items_as_a_context_view(
+    conformance_base_url: str,
+) -> None:
+    async with MemoryClient(settings=_settings(conformance_base_url)) as client:
+        await client.add("paris is the capital of france")
+        await client.add("tokyo is the capital of japan")
+
+        view = await client.build_context("capital of france")
+
+        assert isinstance(view, ContextView)
+        assert view.text == "capital of france"
+        assert len(view.items) == 1
+        assert "paris" in view.items[0].content
+        assert view.degraded is None
+
+
+async def test_build_context_respects_the_limit(conformance_base_url: str) -> None:
+    async with MemoryClient(settings=_settings(conformance_base_url)) as client:
+        for i in range(5):
+            await client.add(f"context note number {i} about kiwis")
+        view = await client.build_context("kiwis", limit=2)
+        assert len(view.items) == 2
+
+
+async def test_share_returns_the_full_row(conformance_base_url: str) -> None:
+    async with MemoryClient(settings=_settings(conformance_base_url)) as client:
+        added = await client.add("a note worth sharing")
+
+        shared = await client.share(added.memory_id, visibility=Visibility.SHARED)
+
+        assert isinstance(shared, MemoryResponse)  # share() returns the full row (design §2.5)
+        assert shared.id == added.memory_id
+        assert shared.content == "a note worth sharing"
+
+
+async def test_share_of_an_unknown_id_raises_not_found(conformance_base_url: str) -> None:
+    from mu_sdk.errors import NotFoundError
+
+    async with MemoryClient(settings=_settings(conformance_base_url)) as client:
+        with pytest.raises(NotFoundError):
+            await client.share("does-not-exist", visibility=Visibility.SHARED)
+
+
+async def test_promote_raises_the_named_not_implemented_error_without_any_network_call(
+    conformance_base_url: str,
+) -> None:
+    """`promote()` never reaches the wire at all (build-queue item 5, `client.py` docstring) — a
+    LIVE server being available (this fixture) proves the point: even though the conformance server
+    is up, calling `promote()` raises immediately, never attempting a request against it."""
+    async with MemoryClient(settings=_settings(conformance_base_url)) as client:
+        with pytest.raises(SurfaceVerbNotImplementedError) as exc_info:
+            await client.promote("some-id", to_tier="mtm")
+        assert exc_info.value.status_code == 501
+
+
+async def test_demote_raises_the_named_not_implemented_error_without_any_network_call(
+    conformance_base_url: str,
+) -> None:
+    async with MemoryClient(settings=_settings(conformance_base_url)) as client:
+        with pytest.raises(SurfaceVerbNotImplementedError) as exc_info:
+            await client.demote("some-id", to_tier="stm")
+        assert exc_info.value.status_code == 501

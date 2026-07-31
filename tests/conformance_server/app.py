@@ -1,8 +1,17 @@
-"""A REAL minimal conformance server — a FastAPI app implementing the add/search/recall/context
-wire endpoints this SDK phase targets, run under a REAL uvicorn instance (see
-`tests/integration/conftest.py`). This is NOT `mu-server` (which does not exist yet); it is the
-dev-standards-mandated "real local conformance server" the integration suite's real `httpx` client
-makes real TCP requests against — no mock ever stands in for it or for `httpx`.
+"""A REAL minimal conformance server — a FastAPI app implementing the add/search/recall/get/
+build_context/share/context wire endpoints this SDK phase targets, run under a REAL uvicorn
+instance (see `tests/integration/conftest.py`). This is NOT `mu-server` (which does not exist yet);
+it is the dev-standards-mandated "real local conformance server" the integration suite's real
+`httpx` client makes real TCP requests against — no mock ever stands in for it or for `httpx`.
+
+`GET /v1/memories/{id}` (`.get()`), `POST /v1/context/window` (`.build_context()`), and
+`POST /v1/memories/{id}/share` (`.share()`) are net-new this phase (B2, design §2.5) — placeholder
+routes (no frozen wire contract pins them yet, same "net-new" status `POST /v1/memories/consolidate`
+and `POST /v1/memories/ask` already had before this phase), added here the same way those two were:
+the simplest possible REAL implementation of the documented behavior, so B2's integration tests
+exercise the real HTTP layer end-to-end (DEV-STANDARDS "zero mocks"), not just request construction.
+`promote`/`demote` have NO route here — `MemoryClient.promote()`/`.demote()` never make a network
+call at all (see `client.py`'s docstrings), so there is nothing for this server to serve.
 
 Auth: supports both the demo identity headers (`X-Demo-*`, api-mcp-surface-spec.md §2.2) and a
 bearer/API-key `Authorization` header — mirroring `DemoHeaderAuth`/`ApiKeyAuth` one-to-one. Missing
@@ -208,6 +217,73 @@ async def upsert_memory(
     return memory_response
 
 
+# ---- GET /v1/memories/{memory_id} (get) ---------------------------------------------------------
+# NET-NEW route (B2, module docstring): a point-get by id, tenancy-scoped by identity exactly like
+# every other route. 404 (never a fake row) when the id is unknown OR belongs to a different tenant
+# — the SDK's `get()` maps that 404 to `None` (see `client.py`), never distinguishing "absent" from
+# "cross-tenant" (same non-enumerating discipline `resolve_identity`'s 401 already follows).
+
+
+@app.get("/v1/memories/{memory_id}")
+async def get_memory(
+    memory_id: str,
+    identity: Annotated[Identity, Depends(resolve_identity)],
+    response: Response,
+    x_request_id: Annotated[str | None, Header()] = None,
+) -> dict[str, Any]:
+    request_id = _request_id(x_request_id)
+    response.headers["X-Request-ID"] = request_id
+    tenant_store = _memories.get(identity.tenant_key, {})
+    memory = tenant_store.get(memory_id)
+    if memory is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"detail": f"memory {memory_id} not found", "request_id": request_id},
+        )
+    return memory
+
+
+# ---- POST /v1/memories/{memory_id}/share (share) ----------------------------------------------
+# NET-NEW route (B2, module docstring): the private->shared crossing verb. This fake has no
+# separate private-plane store to cross FROM, so the simplest real implementation is: look the
+# memory up in the caller's tenant store (404 if absent, same discipline as `get`), validate
+# `visibility`, and return the row unchanged — `MemoryResponse` (Appendix A.1) carries no
+# `visibility` field to mutate (see `client.py`'s `share()` docstring), so there is nothing else
+# for a conforming server to do with this fake's flat in-memory shape.
+
+
+class _ShareBody(BaseModel):
+    visibility: str = Field(min_length=1)
+
+
+@app.post("/v1/memories/{memory_id}/share")
+async def share_memory(
+    memory_id: str,
+    body: _ShareBody,
+    identity: Annotated[Identity, Depends(resolve_identity)],
+    response: Response,
+    x_request_id: Annotated[str | None, Header()] = None,
+) -> dict[str, Any]:
+    request_id = _request_id(x_request_id)
+    response.headers["X-Request-ID"] = request_id
+    if body.visibility not in ("shared", "private"):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "detail": f"visibility must be shared|private, got {body.visibility!r}",
+                "request_id": request_id,
+            },
+        )
+    tenant_store = _memories.get(identity.tenant_key, {})
+    memory = tenant_store.get(memory_id)
+    if memory is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"detail": f"memory {memory_id} not found", "request_id": request_id},
+        )
+    return memory
+
+
 # ---- GET /memories (search) ------------------------------------------------------------------
 
 
@@ -292,7 +368,7 @@ async def recall_memories(
         "namespace": {
             "org": "conformance-org",
             "workspace": identity.workspace_id,
-            "user": identity.user_id,
+            "user": "*",  # SHARED namespace requires user="*" (mu_contracts CANONICAL §1 rule 4)
             "session": identity.session_id,
             "visibility": "shared",
         },
@@ -381,6 +457,50 @@ async def ask_memory(
         "answer": answer,
         "generated_at": datetime.now(UTC).isoformat(),
     }
+
+
+# ---- POST /v1/context/window (build_context) -----------------------------------------------------
+# NET-NEW route (B2, module docstring) — the PRIVATE-plane context-WINDOW helper
+# (`MemoryClient.build_context()`'s wire twin, design §2.5 REVIEW-2 FIX 1). Deterministic recall +
+# render, NO LLM synthesis: reuses the exact same tenant-scoped substring match `recall_memories`
+# already does, projected into `RecallItemView`-shaped items (the canonical hit-item DTO
+# `ContextView.items` shares with `RecallResult.items`, `SDK-BUILD-DECISIONS.md` Decision B
+# cross-cutting section) — never the shared-plane `_DiscoverBody`/`ContextIndexListView` shape
+# below, which is a completely different (governed-transfer) verb.
+
+
+class _ContextWindowBody(BaseModel):
+    text: str = Field(min_length=1)
+    limit: int = 10
+    max_chars: int | None = None
+
+
+@app.post("/v1/context/window")
+async def context_window(
+    body: _ContextWindowBody,
+    identity: Annotated[Identity, Depends(resolve_identity)],
+    response: Response,
+    x_request_id: Annotated[str | None, Header()] = None,
+) -> dict[str, Any]:
+    response.headers["X-Request-ID"] = _request_id(x_request_id)
+    tenant_store = _memories.get(identity.tenant_key, {})
+    matches = [m for m in tenant_store.values() if body.text.lower() in m["content"].lower()]
+    matches.sort(key=lambda m: m["created_at"], reverse=True)
+    matches = matches[: body.limit]
+    items = [
+        {
+            "memory_id": m["id"],
+            "content": m["content"],
+            "tier": m["tier"],
+            "channel": "stm",
+            "fused_score": 1.0 - (i * 0.01),
+            "rerank_score": None,
+            "is_floor": False,
+            "artifact_ref": None,
+        }
+        for i, m in enumerate(matches)
+    ]
+    return {"text": body.text, "items": items, "degraded": None}
 
 
 # ---- POST /v1/context/discover -----------------------------------------------------------------
