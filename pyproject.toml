@@ -32,6 +32,13 @@ dev = [
     "fastapi>=0.115,<1",
     "uvicorn>=0.32,<1",
 ]
+# Stage D (build-plan §5 D1, design §1.2/§9): `mode="embedded"` needs the engine IN-PROCESS.
+# `mu_sdk.transport.EmbeddedTransport` imports `mu_local` LAZILY (inside __init__, never at module
+# scope) so the DEFAULT install (no extra) still satisfies `sdk-has-no-engine` — grep-verified, see
+# this task's own report. Installing this extra is the only way `mode="embedded"` becomes usable.
+embedded = [
+    "mu-local",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -46,6 +53,10 @@ packages = ["src/mu_sdk"]
 # not a uv workspace (mu-sdk-python is its own repo per the ratified 5-repo split, PACKAGING-v2 banner
 # item 1) — so this is a directory dependency, not a workspace link.
 mu-contracts = { path = "../mu-core/packages/mu-contracts" }
+# `[embedded]`-only path dep (Stage D, D1) — same sibling-repo-under-mu_project/ shape as
+# mu-contracts above. mu-local's OWN pyproject.toml pulls in mu-engine transitively, so no separate
+# entry is needed here for it.
+mu-local = { path = "../mu-core/packages/mu-local" }
 
 # ------------------------------------------------------------------------------------------------
 # mypy — strict, CI gate (DEV-STANDARDS "strict static typing").

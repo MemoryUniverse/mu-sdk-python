@@ -7,11 +7,26 @@ root_packages =
 # sibling repos) — they are "external" to import-linter's graph-builder, so the forbidden-modules
 # contract below needs this flag to check for their import statements at all.
 include_external_packages = True
+# Stage D (build-plan §5 D1): `mu_sdk.config`'s A4-pinned types (StorageSettings/ManagerMode/
+# LifecycleSettings/etc.) are imported ONLY inside `if TYPE_CHECKING:` (mu_sdk/config.py's own
+# module docstring) — static-analysis-only, never executed, so they must not count as a real edge.
+exclude_type_checking_imports = True
 
 # The load-bearing gate: the SDK must never import the engine (or the embedded local engine) —
 # the "no engine algorithm" guarantee (PACKAGING-v2 §1.1/§5.1 rule 2; CLAUDE.md "no engine, no
 # stores, no strategies, no embedder"). mu_contracts is NOT forbidden — it is the one allowed
 # in-project edge (mu-sdk -> mu-contracts ONLY).
+#
+# TWO explicitly allowlisted runtime edges (Stage D, design §1.2/§9, PACKAGING-v2 §5.1): the
+# `[embedded]` OPTIONAL extra's `mode="embedded"` adapter (`mu_sdk.transport.EmbeddedTransport`)
+# necessarily imports `mu_local`/`mu_engine` for real at runtime — but LAZILY, inside `__init__`/
+# a method body, never at module scope (`mu_sdk/transport.py`'s own module + class docstrings), so
+# the DEFAULT install (no `[embedded]` extra, `mu_local` not even on disk) never executes either
+# import and never requires the package to be installed. import-linter is a purely static
+# AST-level checker with no notion of "lazy" — it flags these two textual import statements
+# regardless of the guard, so they are named here individually (not blanket-exempting the whole
+# `mu_sdk.transport` module) to keep every OTHER, non-lazy import of mu_engine/mu_local in this
+# package still caught.
 [importlinter:contract:sdk-has-no-engine]
 name = sdk-has-no-engine (mu_sdk must never import mu_engine or mu_local)
 type = forbidden
@@ -22,3 +37,6 @@ forbidden_modules =
     mu_local
     mu_server
     mu_client
+ignore_imports =
+    mu_sdk.transport -> mu_local
+    mu_sdk.transport -> mu_engine

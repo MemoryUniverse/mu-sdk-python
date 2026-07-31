@@ -42,10 +42,11 @@ from typing import Any, Self
 from mu_contracts.domain.model.memory import Visibility
 from mu_contracts.validation.plane_gate import validate_plane_fields
 
-from mu_sdk.auth import SdkAuth, resolve_auth
+from mu_sdk.auth import BearerAuth, SdkAuth, resolve_auth
+from mu_sdk.config import SdkConfig
 from mu_sdk.decorators import with_retry, with_timeout, with_trace
 from mu_sdk.error_mapping import raise_for_wire_error
-from mu_sdk.errors import NotFoundError, SurfaceVerbNotImplementedError
+from mu_sdk.errors import AuthenticationError, NotFoundError, SurfaceVerbNotImplementedError
 from mu_sdk.models.consolidate import AskRequest, AskResult, ConsolidateRequest, ConsolidateResult
 from mu_sdk.models.context import ContextIndexListView, ContextView
 from mu_sdk.models.memory import (
@@ -56,7 +57,16 @@ from mu_sdk.models.memory import (
 )
 from mu_sdk.models.recall import RecallChannels, RecallMode, RecallRequest, RecallResult
 from mu_sdk.settings import SdkSettings
-from mu_sdk.transport import HttpxTransport, Transport, TransportResponse
+from mu_sdk.transport import (
+    EmbeddedTransport,
+    HttpxTransport,
+    LocalServerTransport,
+    NullAuth,
+    RemoteTransport,
+    Transport,
+    TransportResponse,
+    load_engine_server_token,
+)
 
 __all__ = ["ContextApi", "MemoryClient"]
 
@@ -70,6 +80,58 @@ _IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"  # api-mcp-surface-spec.md §2.3
 # `SdkConfig`. Module-level (not per-instance) because no constructor arg controls this yet either.
 _PRIVATE_PLANE_CONFIGURED = False
 _SHARED_PLANE_CONFIGURED = True
+
+
+def _resolve_from_config(
+    config: SdkConfig,
+    *,
+    settings: SdkSettings | None,
+    transport: Transport | None,
+    auth: SdkAuth | None,
+) -> tuple[SdkSettings, Transport, SdkAuth]:
+    """`MemoryClient(config=...)`'s transport-selection logic (build-plan §5 D1, design §3/§1.2) —
+    the ONE place `SdkConfig.mode` turns into a real `(settings, transport, auth)` triple. An
+    explicit `settings=`/`transport=`/`auth=` argument always wins over what `config=` would have
+    produced (module docstring on `MemoryClient.__init__`) — this function only fills the gaps.
+
+    `config.shared` (dual-plane, design §4) is deliberately NOT consulted here — see `SdkConfig.
+    shared`'s own docstring in `mu_sdk.config` for why per-call private/shared dispatch is out of
+    D1's scope (it needs the frozen verb bodies' module-level `_PRIVATE_PLANE_CONFIGURED`/
+    `_SHARED_PLANE_CONFIGURED` constants above to become real per-instance state, which this task
+    does not touch)."""
+    resolved_settings = settings or SdkSettings(
+        base_url=config.endpoint or SdkSettings.model_fields["base_url"].get_default(),
+        timeout_s=config.timeout_s,
+    )
+
+    resolved_transport: Transport
+    if transport is not None:
+        resolved_transport = transport
+    elif config.mode == "embedded":
+        resolved_transport = EmbeddedTransport(config)
+    elif config.mode == "local_server":
+        resolved_transport = LocalServerTransport(resolved_settings)
+    else:  # config.mode == "remote" (Literal — SdkConfig only allows these 3 values)
+        resolved_transport = RemoteTransport(resolved_settings)
+
+    resolved_auth: SdkAuth
+    if auth is not None:
+        resolved_auth = auth
+    elif config.mode == "embedded":
+        resolved_auth = NullAuth()
+    elif config.auth is not None:
+        resolved_auth = config.auth
+    elif config.mode == "local_server":
+        # design §1.2 FIX 4: no auth= given for local_server -> auto-load the per-process bearer
+        # token `make up` mints to disk. `load_engine_server_token` raises the NAMED
+        # `EngineServerTokenMissingError` (never a bare exception) when it is absent.
+        resolved_auth = BearerAuth(load_engine_server_token())
+    else:  # config.mode == "remote" with no auth= — SdkConfig's own validator already forbids
+        #      constructing this SdkConfig in the first place; kept as defense-in-depth so this
+        #      function fails loud even if a caller somehow bypasses that validator.
+        raise AuthenticationError("SdkConfig(mode='remote') requires auth=... (design §3).")
+
+    return resolved_settings, resolved_transport, resolved_auth
 
 
 class ContextApi:
@@ -96,15 +158,36 @@ class MemoryClient:
     """Async SDK. Constructs with a `SdkSettings` tree (api_key / demo identity / base_url /
     timeouts / retries — never a hardcoded literal, DEV-STANDARDS rule 3) and an optional
     injected `Transport` (defaults to `HttpxTransport`, swappable for isolated unit tests of the
-    error-mapping/retry logic — never mocked in integration tests)."""
+    error-mapping/retry logic — never mocked in integration tests).
+
+    **Stage D (build-plan §5 D1) — `config=` transport selection (design §3).** Pass an
+    `SdkConfig` and the constructor picks the transport FOR you from `config.mode`
+    (`EmbeddedTransport`/`LocalServerTransport`/`RemoteTransport`, `mu_sdk.transport`) — the
+    "byte-identical code, config picks the transport" guarantee (design §1/§6). Every verb body
+    below (B2, frozen — this task edits ONLY this constructor / the module-level plane-gating
+    note above) then behaves identically regardless of which transport it landed on, module
+    caveats documented on `EmbeddedTransport`/`load_engine_server_token` in `mu_sdk.transport`.
+
+    `settings=`/`transport=`/`auth=` remain fully independent, pre-Stage-D construction knobs
+    (used directly by every existing unit/integration test in this package, none of which pass
+    `config=`) — passing `config=` only FILLS IN whichever of the three you did not pass
+    explicitly (an explicit `settings=`/`transport=`/`auth=` always wins over what `config=` would
+    have resolved, the same "explicit arg beats config-derived default" precedent
+    `mu_engine_server.auth.get_token_path` already uses for its own arg > env > default order)."""
 
     def __init__(
         self,
         *,
+        config: SdkConfig | None = None,
         settings: SdkSettings | None = None,
         transport: Transport | None = None,
         auth: SdkAuth | None = None,
     ) -> None:
+        if config is not None:
+            settings, transport, auth = _resolve_from_config(
+                config, settings=settings, transport=transport, auth=auth
+            )
+        self._config = config
         self._settings = settings or SdkSettings()
         self._auth = auth or resolve_auth(self._settings)
         self._transport = transport or HttpxTransport(self._settings)

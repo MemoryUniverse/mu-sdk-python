@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from mu_sdk.auth import ApiKeyAuth, BearerAuth, DemoHeaderAuth, SdkAuth
 from mu_sdk.client import ContextApi, MemoryClient
+from mu_sdk.config import SdkConfig, SharedPlaneConfig
 from mu_sdk.errors import (
     AuthenticationError,
     AuthorizationError,
@@ -27,7 +28,19 @@ from mu_sdk.errors import (
     ValidationError,
 )
 from mu_sdk.settings import SdkIdentity, SdkSettings
-from mu_sdk.transport import HttpxTransport, Transport, TransportResponse
+from mu_sdk.transport import (
+    EmbeddedExtraNotInstalledError,
+    EmbeddedTransport,
+    EngineServerTokenMissingError,
+    HttpxTransport,
+    LocalServerTransport,
+    NullAuth,
+    RemoteTransport,
+    Transport,
+    TransportResponse,
+    UnroutedEmbeddedCallError,
+    load_engine_server_token,
+)
 
 __all__ = [
     "ApiKeyAuth",
@@ -37,25 +50,35 @@ __all__ = [
     "ConflictError",
     "ContextApi",
     "DemoHeaderAuth",
+    "EmbeddedExtraNotInstalledError",
+    "EmbeddedTransport",
+    "EngineServerTokenMissingError",
     "HttpxTransport",
+    "LocalServerTransport",
     "MemoryClient",
     "NotFoundError",
+    "NullAuth",
     "PrivateDataRejectedError",
     "RateLimitedError",
+    "RemoteTransport",
     "SdkAuth",
+    "SdkConfig",
     "SdkError",
     "SdkIdentity",
     "SdkSettings",
     "SdkTimeoutError",
     "ServerError",
     "ServiceUnavailableError",
+    "SharedPlaneConfig",
     "SurfaceVerbNotImplementedError",
     "TransientSdkError",
     "Transport",
     "TransportError",
     "TransportResponse",
     "UnexpectedResponseError",
+    "UnroutedEmbeddedCallError",
     "ValidationError",
+    "load_engine_server_token",
 ]
 
 __version__ = "0.1.0"
