@@ -1,4 +1,10 @@
+<img src="assets/logo.svg" alt="mu-sdk-python" width="96" height="96">
+
 # mu-sdk-python
+
+Python wire client for Memory Universe. No engine inside — it talks over the versioned contracts.
+
+Part of [Memory Universe](https://github.com/MemoryUniverse).
 
 **The Python developer SDK for Memory Universe.** A thin, typed, async wire client for adding,
 recalling, and reasoning over memory, for anyone building their own agent, tool, or product on top
