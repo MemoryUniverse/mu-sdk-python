@@ -767,7 +767,7 @@ class MemoryClient:
         *,
         user: str | None = None,
         session: str | None = None,
-        limit: int = 50,
+        limit: int | None = None,
     ) -> ConsolidateView:
         """`POST /v1/memories/consolidate` — MTM->LTM DISTILL: extracts bi-temporal SPO facts from
         the recent STM/MTM window and writes them into the LTM graph, applying invalidate-don't-
@@ -787,17 +787,26 @@ class MemoryClient:
         not-yet-updated fabricated payload).
 
         `user`/`session` are validated via `validate_plane_fields` exactly like every other
-        private-plane field on this class."""
+        private-plane field on this class. `limit=None` (the default) falls back to
+        `self._settings.default_consolidate_limit` (Group D / C4 knob, itself defaulting to
+        `mu_contracts.contracts.defaults.DEFAULT_CONSOLIDATE_LIMIT`) — the same
+        None-means-settings-default convention `recall()`/`search()`/`build_context()` use for
+        their own `limit` params, not a bare literal on this signature."""
         validate_plane_fields(
             {"user": user, "session": session},
             private_configured=self._private_configured,
             shared_configured=self._shared_configured,
         )
+        effective_limit = (
+            limit if limit is not None else self._settings.default_consolidate_limit
+        )
         if self._private_configured:
-            request = _CanonicalConsolidateRequest(user=user, session=session, limit=limit)
+            request = _CanonicalConsolidateRequest(
+                user=user, session=session, limit=effective_limit
+            )
             body = request.model_dump(mode="json", exclude_none=True)
         else:
-            legacy_request = _LegacyConsolidateRequest(limit=limit)
+            legacy_request = _LegacyConsolidateRequest(limit=effective_limit)
             body = legacy_request.model_dump(mode="json", exclude_none=True)
         response = await self._execute("POST", "/v1/memories/consolidate", json_body=body)
         return _parse_consolidate_response(response.json_body)

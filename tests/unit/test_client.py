@@ -89,6 +89,30 @@ async def test_consolidate_posts_to_the_net_new_route_with_the_limit_body() -> N
     assert recorded[0]["json_body"] == {"limit": 25}
 
 
+async def test_consolidate_with_no_explicit_limit_uses_the_settings_derived_default() -> None:
+    """C4 straggler: `consolidate()`'s `limit` param must source its default from
+    `SdkSettings.default_consolidate_limit`, not a bare literal on the method signature — same
+    None-means-settings-default wiring `build_context()` proves above. A custom
+    `default_consolidate_limit` (75, deliberately != the shared `DEFAULT_CONSOLIDATE_LIMIT` of 50)
+    must flow all the way into the wire body when the caller passes no `limit`."""
+    now = datetime.now(UTC).isoformat()
+    transport: Transport = _transport(
+        {"facts_extracted": 0, "added": 0, "superseded": 0, "generated_at": now}
+    )
+    settings = SdkSettings(
+        base_url="http://unit-test.invalid",
+        identity=SdkIdentity(
+            user_id="alice", workspace_id="ws-1", namespace_id="ns-1", session_id="s-1"
+        ),
+        max_retries=0,
+        default_consolidate_limit=75,
+    )
+    async with MemoryClient(settings=settings, transport=transport) as client:
+        await client.consolidate()
+    recorded = transport.calls  # type: ignore[attr-defined]
+    assert recorded[0]["json_body"]["limit"] == 75
+
+
 async def test_ask_posts_to_the_net_new_route_and_returns_the_synthesized_answer() -> None:
     now = datetime.now(UTC).isoformat()
     transport: Transport = _transport(
