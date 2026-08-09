@@ -4,6 +4,7 @@ No I/O beyond reading `monkeypatch`-scoped environment variables."""
 from __future__ import annotations
 
 import pytest
+from mu_contracts.contracts.defaults import DEFAULT_CONSOLIDATE_LIMIT, DEFAULT_RECALL_LIMIT
 
 from mu_sdk.settings import SdkSettings
 
@@ -19,6 +20,7 @@ def test_defaults_require_no_environment() -> None:
     assert settings.identity.is_complete() is False
     assert settings.default_page_limit == 10
     assert settings.default_recall_limit == 10
+    assert settings.default_consolidate_limit == 50
 
 
 def test_default_recall_limit_is_independently_configurable() -> None:
@@ -29,10 +31,33 @@ def test_default_recall_limit_is_independently_configurable() -> None:
     assert settings.default_recall_limit == 40
 
 
+def test_default_consolidate_limit_is_independently_configurable() -> None:
+    """`default_consolidate_limit` (Group D / C4) must be its own knob too — `consolidate()`'s
+    sweep size is tuned independently of both `default_page_limit` and `default_recall_limit`."""
+    settings = SdkSettings(default_recall_limit=40, default_consolidate_limit=75)
+    assert settings.default_recall_limit == 40
+    assert settings.default_consolidate_limit == 75
+
+
 @pytest.mark.parametrize("bad_limit", [0, 101])
 def test_default_recall_limit_is_bounded(bad_limit: int) -> None:
     with pytest.raises(Exception):  # noqa: B017 - pydantic ValidationError
         SdkSettings(default_recall_limit=bad_limit)
+
+
+@pytest.mark.parametrize("bad_limit", [0, 1001])
+def test_default_consolidate_limit_is_bounded(bad_limit: int) -> None:
+    with pytest.raises(Exception):  # noqa: B017 - pydantic ValidationError
+        SdkSettings(default_consolidate_limit=bad_limit)
+
+
+def test_recall_and_consolidate_defaults_are_sourced_from_mu_contracts() -> None:
+    """Group D / C4 (`CONFIG-AND-DATA-FIX-PLAN.md` §1.1): `SdkSettings`' own defaults must equal
+    `mu_contracts`' `RecallDefaults` constants — the ONE shared source every one of the 8
+    stray-literal sites now derives from, not a second, independently-typed `10`/`50`."""
+    settings = SdkSettings()
+    assert settings.default_recall_limit == DEFAULT_RECALL_LIMIT
+    assert settings.default_consolidate_limit == DEFAULT_CONSOLIDATE_LIMIT
 
 
 def test_reads_base_url_and_api_key_from_env(monkeypatch: pytest.MonkeyPatch) -> None:

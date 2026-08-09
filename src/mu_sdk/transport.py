@@ -41,6 +41,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 import httpx
+from mu_contracts.contracts.defaults import (
+    DEFAULT_CONSOLIDATE_LIMIT,
+    DEFAULT_RECALL_LIMIT,
+)
 
 from mu_sdk.errors import SdkError, SdkTimeoutError, TransportError
 from mu_sdk.settings import SdkSettings
@@ -417,7 +421,7 @@ class EmbeddedTransport:
         # back `LocalMemory`'s `user="default"`/`session=None` partition.
         result = await self._memory.recall(
             body["text"],
-            limit=body.get("limit", 10),
+            limit=body.get("limit", DEFAULT_RECALL_LIMIT),
             tier=tier,
             **_user_session_kwargs(body),
         )
@@ -428,7 +432,7 @@ class EmbeddedTransport:
         # `{user, session, limit}` verbatim; forwarding keeps the DISTILL sweep scoped to the
         # caller's own namespace instead of always sweeping `LocalMemory`'s default partition.
         result = await self._memory.consolidate(
-            limit=body.get("limit", 50), **_user_session_kwargs(body)
+            limit=body.get("limit", DEFAULT_CONSOLIDATE_LIMIT), **_user_session_kwargs(body)
         )
         payload = {
             "facts_extracted": result.facts_extracted,
@@ -452,7 +456,7 @@ class EmbeddedTransport:
         # forwarding keeps the assembled context window scoped to the caller's own namespace.
         result = await self._memory.context(
             query_text,
-            limit=body.get("limit", 10),
+            limit=body.get("limit", DEFAULT_RECALL_LIMIT),
             max_chars=body.get("max_chars"),
             **_user_session_kwargs(body),
         )
