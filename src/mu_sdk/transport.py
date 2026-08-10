@@ -364,6 +364,14 @@ class EmbeddedTransport:
             return await self._consolidate(body)
         if method == "POST" and path == "/v1/context/window":
             return await self._build_context(body)
+        if method == "POST" and path.startswith("/v1/memories/") and path.endswith("/promote"):
+            return await self._promote(path[len("/v1/memories/") : -len("/promote")], body)
+        if method == "POST" and path.startswith("/v1/memories/") and path.endswith("/demote"):
+            return await self._demote(path[len("/v1/memories/") : -len("/demote")], body)
+        if method == "PUT" and path.startswith("/memories/"):
+            return await self._update(path[len("/memories/") :], body)
+        if method == "DELETE" and path.startswith("/memories/"):
+            return await self._delete(path[len("/memories/") :], query)
         raise UnroutedEmbeddedCallError(
             f"EmbeddedTransport has no route for {method} {path} (see EmbeddedTransport's own "
             "docstring for the full route table and the documented, honest gaps)."
@@ -460,6 +468,31 @@ class EmbeddedTransport:
             max_chars=body.get("max_chars"),
             **_user_session_kwargs(body),
         )
+        return TransportResponse(status_code=200, json_body=result.model_dump(mode="json"))
+
+    async def _promote(self, memory_id: str, body: dict[str, Any]) -> TransportResponse:
+        # Targeted promotion over the REAL engine (LocalMemory.promote -> SurfaceFacade.promote).
+        # to_tier is required (client sends it); user/session forwarded like every other route.
+        result = await self._memory.promote(
+            memory_id, to_tier=body["to_tier"], **_user_session_kwargs(body)
+        )
+        return TransportResponse(status_code=200, json_body=result.model_dump(mode="json"))
+
+    async def _demote(self, memory_id: str, body: dict[str, Any]) -> TransportResponse:
+        result = await self._memory.demote(
+            memory_id, to_tier=body.get("to_tier", "stm"), **_user_session_kwargs(body)
+        )
+        return TransportResponse(status_code=200, json_body=result.model_dump(mode="json"))
+
+    async def _update(self, memory_id: str, body: dict[str, Any]) -> TransportResponse:
+        result = await self._memory.update(
+            memory_id, body["new_content"], **_user_session_kwargs(body)
+        )
+        return TransportResponse(status_code=200, json_body=result.model_dump(mode="json"))
+
+    async def _delete(self, memory_id: str, query: dict[str, Any]) -> TransportResponse:
+        # DELETE carries no body — user/session arrive as query params.
+        result = await self._memory.delete(memory_id, **_user_session_kwargs(query))
         return TransportResponse(status_code=200, json_body=result.model_dump(mode="json"))
 
     async def aclose(self) -> None:

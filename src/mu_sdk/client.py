@@ -102,7 +102,7 @@ from mu_sdk.auth import BearerAuth, SdkAuth, resolve_auth
 from mu_sdk.config import SdkConfig
 from mu_sdk.decorators import with_retry, with_timeout, with_trace
 from mu_sdk.error_mapping import raise_for_wire_error
-from mu_sdk.errors import AuthenticationError, NotFoundError, SurfaceVerbNotImplementedError
+from mu_sdk.errors import AuthenticationError, NotFoundError
 from mu_sdk.models.consolidate import AskRequest, AskResult
 from mu_sdk.models.consolidate import ConsolidateRequest as _LegacyConsolidateRequest
 from mu_sdk.models.consolidate import ConsolidateResult as _LegacyConsolidateResult
@@ -111,6 +111,7 @@ from mu_sdk.models.memory import MemoryCreateRequest as _LegacyAddRequest
 from mu_sdk.models.memory import (
     MemoryListResponse,
     MemoryResponse,
+    MemoryVerbResult,
     MemoryWriteResult,
 )
 from mu_sdk.models.recall import RecallChannels, RecallMode, RecallResult
@@ -727,40 +728,114 @@ class MemoryClient:
         )
         return MemoryResponse.model_validate(response.json_body)
 
-    # ---- lifecycle (TO BUILD, build-queue item 5 — honest 501, never a silent no-op) ----
+    # ---- targeted lifecycle verbs (build-queue item 5 — now REAL over real machinery) ----
 
-    async def promote(self, memory_id: str, *, to_tier: str) -> MemoryWriteResult:
-        """`POST /v1/memories/{id}/promote` (api-mcp-surface-spec.md §4.3b) is DESIGNED but has NO
-        engine-side implementation anywhere in the tree yet: *"no engine method exists yet either
-        (today's only promotion is implicit-on-ingest, `add(promote=True)`)... the facade method
-        raises `NotImplementedError` (never a fake 200) until the engine counterpart lands"*
-        (api-mcp-surface-spec.md §4.3b). This is the wire twin of that exact honesty: raises the
-        NAMED `SurfaceVerbNotImplementedError` (`status_code=501`) immediately, with NO network
-        call — there is nothing on the other end to call yet. Never a silent no-op or a partial
-        success (design §2.5, DEV-STANDARDS rule 8). Return type is annotated `MemoryWriteResult`
-        (the receipt shape `SDK-BUILD-DECISIONS.md` Decision B already assigns for when this DOES
-        get built — "reuse the `add` receipt shape") purely for future signature stability; this
-        method never actually returns.
+    async def promote(
+        self,
+        memory_id: str,
+        *,
+        to_tier: str,
+        user: str | None = None,
+        session: str | None = None,
+    ) -> MemoryVerbResult:
+        """`POST /v1/memories/{id}/promote` — TARGETED single-memory promotion, now a REAL op
+        (build-queue item 5 landed): the engine LOCATES the item and runs the real promotion path
+        (`PromotionService` copy-on-write STM->MTM / `DistillPipeline` MTM->LTM leg). `to_tier` is
+        `"mtm"` (STM->MTM) or `"ltm"` (MTM->LTM). A nonexistent id maps to `NotFoundError` (404); an
+        invalid `to_tier` to a 400. Returns the canonical `MemoryVerbResult` receipt (`from_tier`/
+        `to_tier`/`tiers_affected`).
 
-        `memory_id`/`to_tier` are accepted (matching the documented future request shape,
-        `{to_tier: MemoryTier, manager_mode?}`) but unused — there is no request to build yet."""
-        raise SurfaceVerbNotImplementedError(
-            f"MemoryClient.promote(memory_id={memory_id!r}, to_tier={to_tier!r}) is not "
-            "implemented: no engine/wire counterpart exists yet (build-queue item 5). Use "
-            "recall()/get() plus a manual add() until this lands.",
-            status_code=501,
+        Private-plane verb (the shared plane has no lifecycle move) — `user`/`session` name the η
+        partition, validated exactly like `get()`'s."""
+        validate_plane_fields(
+            {"user": user, "session": session},
+            private_configured=self._private_configured,
+            shared_configured=self._shared_configured,
         )
-
-    async def demote(self, memory_id: str, *, to_tier: str) -> MemoryWriteResult:
-        """See `promote()` — the identical honest-`501` twin for the opposite tier transition
-        (`POST /v1/memories/{id}/demote`, api-mcp-surface-spec.md §4.3b), same reasoning, same
-        NAMED error, same NO-network-call discipline."""
-        raise SurfaceVerbNotImplementedError(
-            f"MemoryClient.demote(memory_id={memory_id!r}, to_tier={to_tier!r}) is not "
-            "implemented: no engine/wire counterpart exists yet (build-queue item 5). Use "
-            "recall()/get() plus a manual add() until this lands.",
-            status_code=501,
+        body: dict[str, Any] = {"to_tier": to_tier}
+        if user is not None:
+            body["user"] = user
+        if session is not None:
+            body["session"] = session
+        response = await self._execute(
+            "POST", f"/v1/memories/{memory_id}/promote", json_body=body
         )
+        return MemoryVerbResult.model_validate(response.json_body)
+
+    async def demote(
+        self,
+        memory_id: str,
+        *,
+        to_tier: str = "stm",
+        user: str | None = None,
+        session: str | None = None,
+    ) -> MemoryVerbResult:
+        """`POST /v1/memories/{id}/demote` — TARGETED MTM->STM tier-down, now REAL (reuses
+        `DemotionService._demote_one`'s write-ahead-then-remove sequence on the one item). `to_tier`
+        is `"stm"`. Same 404/400 semantics + private-plane discipline as `promote()`."""
+        validate_plane_fields(
+            {"user": user, "session": session},
+            private_configured=self._private_configured,
+            shared_configured=self._shared_configured,
+        )
+        body: dict[str, Any] = {"to_tier": to_tier}
+        if user is not None:
+            body["user"] = user
+        if session is not None:
+            body["session"] = session
+        response = await self._execute(
+            "POST", f"/v1/memories/{memory_id}/demote", json_body=body
+        )
+        return MemoryVerbResult.model_validate(response.json_body)
+
+    async def update(
+        self,
+        memory_id: str,
+        new_content: str,
+        *,
+        user: str | None = None,
+        session: str | None = None,
+    ) -> MemoryVerbResult:
+        """`PUT /memories/{id}` — SUPERSEDE the memory with `new_content` (invalidate-don't-delete):
+        the engine INGESTs the new version and marks the old one `superseded_by` it via the SAME
+        `invalidate` the conflict path uses. Returns the NEW memory (`memory_id` = new id,
+        `superseded_id` = old id). 404 if the id is resident in no tier; private-plane."""
+        validate_plane_fields(
+            {"user": user, "session": session},
+            private_configured=self._private_configured,
+            shared_configured=self._shared_configured,
+        )
+        body: dict[str, Any] = {"new_content": new_content}
+        if user is not None:
+            body["user"] = user
+        if session is not None:
+            body["session"] = session
+        response = await self._execute("PUT", f"/memories/{memory_id}", json_body=body)
+        return MemoryVerbResult.model_validate(response.json_body)
+
+    async def delete(
+        self,
+        memory_id: str,
+        *,
+        user: str | None = None,
+        session: str | None = None,
+    ) -> MemoryVerbResult:
+        """`DELETE /memories/{id}?user=&session=` — soft-delete (invalidate-don't-delete): MTM/LTM
+        flip to `state=expired` + `invalid_at` (kept in bi-temporal history, dropped from active
+        recall); STM (ephemeral) is evicted. NEVER a hard delete of active data. `user`/`session`
+        are query params (a DELETE carries no body). 404 if resident in no tier; private-plane."""
+        validate_plane_fields(
+            {"user": user, "session": session},
+            private_configured=self._private_configured,
+            shared_configured=self._shared_configured,
+        )
+        params: dict[str, Any] | None = {
+            key: value
+            for key, value in {"user": user, "session": session}.items()
+            if value is not None
+        } or None
+        response = await self._execute("DELETE", f"/memories/{memory_id}", params=params)
+        return MemoryVerbResult.model_validate(response.json_body)
 
     async def consolidate(
         self,

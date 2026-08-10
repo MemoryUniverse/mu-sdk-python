@@ -13,11 +13,11 @@ from mu_sdk.client import MemoryClient
 from mu_sdk.errors import (
     AuthenticationError,
     ConflictError,
+    NotFoundError,
     PrivateDataRejectedError,
-    SurfaceVerbNotImplementedError,
 )
 from mu_sdk.models.context import ContextView
-from mu_sdk.models.memory import MemoryResponse, MemoryWriteResult
+from mu_sdk.models.memory import MemoryResponse, MemoryVerbResult, MemoryWriteResult
 from mu_sdk.settings import SdkIdentity, SdkSettings
 
 pytestmark = pytest.mark.integration
@@ -343,22 +343,33 @@ async def test_share_of_an_unknown_id_raises_not_found(conformance_base_url: str
             await client.share("does-not-exist", visibility=Visibility.SHARED)
 
 
-async def test_promote_raises_the_named_not_implemented_error_without_any_network_call(
-    conformance_base_url: str,
-) -> None:
-    """`promote()` never reaches the wire at all (build-queue item 5, `client.py` docstring) — a
-    LIVE server being available (this fixture) proves the point: even though the conformance server
-    is up, calling `promote()` raises immediately, never attempting a request against it."""
+async def test_promote_round_trips_over_the_wire(conformance_base_url: str) -> None:
+    """`promote()` is now a REAL wire verb (build-queue item 5): it POSTs to the real route and
+    returns a `MemoryVerbResult`. Proven end-to-end against the live conformance server."""
     async with MemoryClient(settings=_settings(conformance_base_url)) as client:
-        with pytest.raises(SurfaceVerbNotImplementedError) as exc_info:
-            await client.promote("some-id", to_tier="mtm")
-        assert exc_info.value.status_code == 501
+        added = await client.add("the deploy target", visibility=Visibility.SHARED)
+        result = await client.promote(added.memory_id, to_tier="mtm")
+        assert isinstance(result, MemoryVerbResult)
+        assert result.verb == "promote" and result.to_tier == "mtm"
 
 
-async def test_demote_raises_the_named_not_implemented_error_without_any_network_call(
-    conformance_base_url: str,
-) -> None:
+async def test_demote_round_trips_over_the_wire(conformance_base_url: str) -> None:
     async with MemoryClient(settings=_settings(conformance_base_url)) as client:
-        with pytest.raises(SurfaceVerbNotImplementedError) as exc_info:
-            await client.demote("some-id", to_tier="stm")
-        assert exc_info.value.status_code == 501
+        added = await client.add("a fact to demote", visibility=Visibility.SHARED)
+        result = await client.demote(added.memory_id, to_tier="stm")
+        assert result.verb == "demote"
+
+
+async def test_update_and_delete_round_trip_over_the_wire(conformance_base_url: str) -> None:
+    async with MemoryClient(settings=_settings(conformance_base_url)) as client:
+        added = await client.add("Bob lives in Rome", visibility=Visibility.SHARED)
+        updated = await client.update(added.memory_id, "Bob lives in Milan")
+        assert updated.verb == "update" and updated.superseded_id == added.memory_id
+        deleted = await client.delete(added.memory_id)
+        assert deleted.verb == "delete" and deleted.invalidated is True
+
+
+async def test_promote_nonexistent_id_maps_to_not_found(conformance_base_url: str) -> None:
+    async with MemoryClient(settings=_settings(conformance_base_url)) as client:
+        with pytest.raises(NotFoundError):
+            await client.promote("does-not-exist", to_tier="mtm")

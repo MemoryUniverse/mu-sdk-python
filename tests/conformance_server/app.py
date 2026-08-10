@@ -284,6 +284,112 @@ async def share_memory(
     return memory
 
 
+# ---- promote / demote / update / delete (build-queue §13 item 5 — now REAL verbs) -------------
+# This fake mirrors the real mu-engine-server wire contract: a nonexistent id -> 404 (the SDK maps
+# it to NotFoundError); a resident id -> a MemoryVerbResult-shaped receipt. The in-memory store has
+# a single flat tier, so the tier transitions are recorded on the receipt but not physically moved.
+
+
+class _VerbBody(BaseModel):
+    to_tier: str = Field(min_length=1)
+
+
+class _UpdateBody(BaseModel):
+    new_content: str = Field(min_length=1)
+
+
+def _require_memory(identity: Identity, memory_id: str, request_id: str) -> dict[str, Any]:
+    memory = _memories.get(identity.tenant_key, {}).get(memory_id)
+    if memory is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"detail": f"memory {memory_id} not found", "request_id": request_id},
+        )
+    return memory
+
+
+@app.post("/v1/memories/{memory_id}/promote")
+async def promote_memory(
+    memory_id: str,
+    body: _VerbBody,
+    identity: Annotated[Identity, Depends(resolve_identity)],
+    response: Response,
+    x_request_id: Annotated[str | None, Header()] = None,
+) -> dict[str, Any]:
+    request_id = _request_id(x_request_id)
+    response.headers["X-Request-ID"] = request_id
+    _require_memory(identity, memory_id, request_id)
+    if body.to_tier not in ("mtm", "ltm"):
+        raise HTTPException(
+            status_code=400,
+            detail={"detail": f"invalid to_tier {body.to_tier!r}", "request_id": request_id},
+        )
+    return {
+        "memory_id": memory_id,
+        "verb": "promote",
+        "from_tier": "stm",
+        "to_tier": body.to_tier,
+        "tiers_affected": [body.to_tier],
+    }
+
+
+@app.post("/v1/memories/{memory_id}/demote")
+async def demote_memory(
+    memory_id: str,
+    body: _VerbBody,
+    identity: Annotated[Identity, Depends(resolve_identity)],
+    response: Response,
+    x_request_id: Annotated[str | None, Header()] = None,
+) -> dict[str, Any]:
+    request_id = _request_id(x_request_id)
+    response.headers["X-Request-ID"] = request_id
+    _require_memory(identity, memory_id, request_id)
+    return {
+        "memory_id": memory_id,
+        "verb": "demote",
+        "from_tier": "mtm",
+        "to_tier": body.to_tier,
+        "tiers_affected": [body.to_tier, "mtm"],
+    }
+
+
+@app.put("/memories/{memory_id}")
+async def update_memory(
+    memory_id: str,
+    body: _UpdateBody,
+    identity: Annotated[Identity, Depends(resolve_identity)],
+    response: Response,
+    x_request_id: Annotated[str | None, Header()] = None,
+) -> dict[str, Any]:
+    request_id = _request_id(x_request_id)
+    response.headers["X-Request-ID"] = request_id
+    _require_memory(identity, memory_id, request_id)
+    return {
+        "memory_id": f"{memory_id}-v2",
+        "verb": "update",
+        "superseded_id": memory_id,
+        "tiers_affected": ["stm", "mtm"],
+    }
+
+
+@app.delete("/memories/{memory_id}")
+async def delete_memory(
+    memory_id: str,
+    identity: Annotated[Identity, Depends(resolve_identity)],
+    response: Response,
+    x_request_id: Annotated[str | None, Header()] = None,
+) -> dict[str, Any]:
+    request_id = _request_id(x_request_id)
+    response.headers["X-Request-ID"] = request_id
+    _require_memory(identity, memory_id, request_id)
+    return {
+        "memory_id": memory_id,
+        "verb": "delete",
+        "tiers_affected": ["stm", "mtm", "ltm"],
+        "invalidated": True,
+    }
+
+
 # ---- GET /memories (search) ------------------------------------------------------------------
 
 

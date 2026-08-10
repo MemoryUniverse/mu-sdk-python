@@ -16,10 +16,9 @@ from mu_contracts.domain.errors import PlaneFieldRejectedError
 from mu_contracts.domain.model.memory import Visibility
 
 from mu_sdk.client import MemoryClient
-from mu_sdk.errors import SurfaceVerbNotImplementedError
 from mu_sdk.models.consolidate import AskResult
 from mu_sdk.models.context import ContextView
-from mu_sdk.models.memory import MemoryResponse, MemoryWriteResult
+from mu_sdk.models.memory import MemoryResponse, MemoryVerbResult, MemoryWriteResult
 from mu_sdk.settings import SdkIdentity, SdkSettings
 from mu_sdk.transport import Transport, TransportResponse
 
@@ -351,22 +350,57 @@ async def test_share_posts_visibility_to_the_share_route() -> None:
     assert recorded[0]["json_body"] == {"visibility": "shared"}
 
 
-# ---- promote()/demote() (BG-3: named 501, zero network calls) ---------------------------------
+# ---- promote/demote/update/delete (build-queue §13 item 5 — now REAL wire verbs) --------------
 
 
-async def test_promote_raises_the_named_not_implemented_error_with_zero_network_calls() -> None:
-    transport = _transport({})
+async def test_promote_posts_to_the_real_route_and_returns_verb_result() -> None:
+    transport = _transport(
+        {
+            "memory_id": "mem-1",
+            "verb": "promote",
+            "from_tier": "stm",
+            "to_tier": "mtm",
+            "tiers_affected": ["mtm"],
+        }
+    )
     async with MemoryClient(settings=_settings(), transport=transport) as client:
-        with pytest.raises(SurfaceVerbNotImplementedError) as exc_info:
-            await client.promote("mem-1", to_tier="mtm")
-    assert exc_info.value.status_code == 501
-    assert transport.calls == []  # type: ignore[attr-defined]  # never reached the wire at all
+        result = await client.promote("mem-1", to_tier="mtm")
+    assert isinstance(result, MemoryVerbResult)
+    assert result.verb == "promote" and result.to_tier == "mtm"
+    recorded = transport.calls[0]  # type: ignore[attr-defined]
+    assert recorded["method"] == "POST"
+    assert recorded["path"] == "/v1/memories/mem-1/promote"
+    assert recorded["json_body"]["to_tier"] == "mtm"
 
 
-async def test_demote_raises_the_named_not_implemented_error_with_zero_network_calls() -> None:
-    transport = _transport({})
+async def test_demote_posts_to_the_real_route() -> None:
+    transport = _transport(
+        {"memory_id": "mem-1", "verb": "demote", "from_tier": "mtm", "to_tier": "stm"}
+    )
     async with MemoryClient(settings=_settings(), transport=transport) as client:
-        with pytest.raises(SurfaceVerbNotImplementedError) as exc_info:
-            await client.demote("mem-1", to_tier="stm")
-    assert exc_info.value.status_code == 501
-    assert transport.calls == []  # type: ignore[attr-defined]
+        result = await client.demote("mem-1", to_tier="stm")
+    assert result.verb == "demote"
+    assert transport.calls[0]["path"] == "/v1/memories/mem-1/demote"  # type: ignore[attr-defined]
+
+
+async def test_update_puts_new_content_and_returns_new_memory() -> None:
+    transport = _transport(
+        {"memory_id": "mem-new", "verb": "update", "superseded_id": "mem-1"}
+    )
+    async with MemoryClient(settings=_settings(), transport=transport) as client:
+        result = await client.update("mem-1", "Ada lives in Berlin")
+    assert result.memory_id == "mem-new" and result.superseded_id == "mem-1"
+    recorded = transport.calls[0]  # type: ignore[attr-defined]
+    assert recorded["method"] == "PUT" and recorded["path"] == "/memories/mem-1"
+    assert recorded["json_body"]["new_content"] == "Ada lives in Berlin"
+
+
+async def test_delete_sends_delete_with_query_params() -> None:
+    transport = _transport(
+        {"memory_id": "mem-1", "verb": "delete", "invalidated": True, "tiers_affected": ["stm"]}
+    )
+    async with MemoryClient(settings=_settings(), transport=transport) as client:
+        result = await client.delete("mem-1")
+    assert result.verb == "delete" and result.invalidated is True
+    recorded = transport.calls[0]  # type: ignore[attr-defined]
+    assert recorded["method"] == "DELETE" and recorded["path"] == "/memories/mem-1"

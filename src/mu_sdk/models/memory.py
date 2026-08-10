@@ -37,7 +37,7 @@ from mu_contracts.contracts.memory import (
     MemoryTierLiteral,
     PolarityLiteral,
 )
-from mu_contracts.contracts.views import MemoryWriteResult
+from mu_contracts.contracts.views import MemoryVerbResult, MemoryWriteResult
 from mu_contracts.domain.model.memory import Visibility
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -47,6 +47,7 @@ __all__ = [
     "MemoryListResponse",
     "MemoryResponse",
     "MemoryTierLiteral",
+    "MemoryVerbResult",
     "MemoryWriteResult",
     "PolarityLiteral",
 ]
