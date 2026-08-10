@@ -27,6 +27,7 @@ ignore = [
 [lint.per-file-ignores]
 "tests/**" = ["S101", "ANN"]              # asserts + loose annotations OK in tests
 "tests/conformance_server/**" = ["S101", "ANN", "B008"]  # FastAPI Depends(...) default-arg pattern
+"examples/**" = ["S101", "T201"]          # runnable examples may assert + print for the reader
 
 [lint.isort]
 known-first-party = ["mu_sdk"]

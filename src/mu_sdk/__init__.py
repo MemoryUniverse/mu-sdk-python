@@ -27,6 +27,13 @@ from mu_sdk.errors import (
     UnexpectedResponseError,
     ValidationError,
 )
+from mu_sdk.middleware import (
+    InjectMode,
+    LlmCall,
+    MemoryMiddleware,
+    MiddlewareConfig,
+    default_render,
+)
 from mu_sdk.settings import SdkIdentity, SdkSettings
 from mu_sdk.transport import (
     EmbeddedExtraNotInstalledError,
@@ -54,8 +61,12 @@ __all__ = [
     "EmbeddedTransport",
     "EngineServerTokenMissingError",
     "HttpxTransport",
+    "InjectMode",
+    "LlmCall",
     "LocalServerTransport",
     "MemoryClient",
+    "MemoryMiddleware",
+    "MiddlewareConfig",
     "NotFoundError",
     "NullAuth",
     "PrivateDataRejectedError",
@@ -78,6 +89,7 @@ __all__ = [
     "UnexpectedResponseError",
     "UnroutedEmbeddedCallError",
     "ValidationError",
+    "default_render",
     "load_engine_server_token",
 ]
 
