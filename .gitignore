@@ -20,3 +20,6 @@ coverage/
 .serena/
 logs/
 *.log
+
+# local embedded-mode sqlite relational store (created by mode=embedded test/example runs)
+.mu_data/
