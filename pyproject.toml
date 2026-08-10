@@ -52,11 +52,20 @@ packages = ["src/mu_sdk"]
 # "may depend on... mu-contracts — only"). Absolute path: the two repos are siblings under mu_project/,
 # not a uv workspace (mu-sdk-python is its own repo per the ratified 5-repo split, PACKAGING-v2 banner
 # item 1) — so this is a directory dependency, not a workspace link.
-mu-contracts = { path = "../mu-core/packages/mu-contracts" }
+# `editable = true` (CO-6): mu-local (below, `[embedded]` extra) is itself a member of the mu-core
+# uv *workspace*, so uv resolves ITS mu-contracts dependency via the workspace's `{ workspace = true }`
+# source — which uv always treats as editable. Left as a plain (non-editable) path dep here, this
+# repo's own top-level `mu-contracts` dependency collides with that editable one: uv reports
+# "conflicting URLs for package `mu-contracts`" (same path, different editable-ness) and refuses to
+# resolve. Marking this source editable too makes both resolve to the SAME source, not a different
+# dependency set — mu-contracts is still pulled from the same sibling checkout either way.
+mu-contracts = { path = "../mu-core/packages/mu-contracts", editable = true }
 # `[embedded]`-only path dep (Stage D, D1) — same sibling-repo-under-mu_project/ shape as
 # mu-contracts above. mu-local's OWN pyproject.toml pulls in mu-engine transitively, so no separate
-# entry is needed here for it.
-mu-local = { path = "../mu-core/packages/mu-local" }
+# entry is needed here for it. Also `editable = true` for the same CO-6 reason: mu-local is a
+# mu-core workspace member, so anything that depends on it transitively (mu-engine, mu-contracts)
+# is resolved editable; keep mu-local itself consistent rather than mixed.
+mu-local = { path = "../mu-core/packages/mu-local", editable = true }
 
 # ------------------------------------------------------------------------------------------------
 # mypy — strict, CI gate (DEV-STANDARDS "strict static typing").
