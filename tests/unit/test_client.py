@@ -404,3 +404,66 @@ async def test_delete_sends_delete_with_query_params() -> None:
     assert result.verb == "delete" and result.invalidated is True
     recorded = transport.calls[0]  # type: ignore[attr-defined]
     assert recorded["method"] == "DELETE" and recorded["path"] == "/memories/mem-1"
+
+
+# ---- importance_score wire pass-through (private/engine-server plane) ------------------------
+
+
+async def test_private_plane_add_sends_importance_score_on_the_wire() -> None:
+    """REGRESSION: `add()`'s private-plane wire dump used to `include=` only
+    `{content, user, session}`, deliberately excluding `importance_score` because the real
+    mu-engine-server route had "no engine-side counterpart" for it. That route now HONOURS the
+    field (it threads to `SurfaceFacade.add` -> `DeterministicPromoteStage`'s
+    importance>=threshold gate), so excluding it here meant no SDK caller could ever get a memory
+    promoted into MTM over the wire — the server plane was effectively STM-only.
+    """
+    from mu_sdk.config import SdkConfig
+
+    transport = _transport(
+        {
+            "memory_id": "mem-1",
+            "content_hash": "abc123",
+            "promoted": True,
+            "tiers_written": ["stm", "mtm"],
+            "namespace": "mu/default/local/private/u1/s1",
+            "events_emitted": [],
+        }
+    )
+    config = SdkConfig(mode="local_server", endpoint="http://unit-test.invalid")
+    async with MemoryClient(config=config, transport=transport) as client:
+        await client.add("hello", user="u1", session="s1", importance_score=0.95)
+
+    body = transport.calls[0]["json_body"]
+    assert body == {
+        "content": "hello",
+        "user": "u1",
+        "session": "s1",
+        "importance_score": 0.95,
+    }
+
+
+async def test_private_plane_add_omits_importance_score_when_not_supplied() -> None:
+    """Backward-compatibility guard: a caller that passes no `importance_score` must still produce
+    a byte-identical body to the pre-change one (`exclude_none=True` — no explicit null, no
+    injected default), so nothing about the previously-verified wire shape moved."""
+    from mu_sdk.config import SdkConfig
+
+    transport = _transport(
+        {
+            "memory_id": "mem-1",
+            "content_hash": "abc123",
+            "promoted": False,
+            "tiers_written": ["stm"],
+            "namespace": "mu/default/local/private/u1/s1",
+            "events_emitted": [],
+        }
+    )
+    config = SdkConfig(mode="local_server", endpoint="http://unit-test.invalid")
+    async with MemoryClient(config=config, transport=transport) as client:
+        await client.add("hello", user="u1", session="s1")
+
+    assert transport.calls[0]["json_body"] == {
+        "content": "hello",
+        "user": "u1",
+        "session": "s1",
+    }

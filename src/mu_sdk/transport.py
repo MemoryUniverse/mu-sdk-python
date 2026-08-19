@@ -514,6 +514,14 @@ def _user_session_kwargs(body: dict[str, Any]) -> dict[str, Any]:
     user = body.get("user")
     if user is not None:
         kwargs["user"] = user
+    # Same treatment for `importance_score`: `LocalMemory.add` honours it (it gates the
+    # STM->MTM promote), and without forwarding it the EMBEDDED leg silently fell back to the
+    # 0.5 default while the local_server leg honoured it — a portability-parity divergence for
+    # the exact same call (F1's own guarantee). Only forwarded when actually supplied, so
+    # `LocalMemory`'s own default still applies untouched for callers that never pass it.
+    importance_score = body.get("importance_score")
+    if importance_score is not None:
+        kwargs["importance_score"] = importance_score
     session = body.get("session")
     if session is not None:
         kwargs["session"] = session

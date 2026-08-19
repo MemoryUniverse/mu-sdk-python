@@ -450,8 +450,17 @@ class MemoryClient:
                 importance_score=importance_score,
                 metadata=metadata,
             )
+            # `importance_score` JOINED the include-set once the real mu-engine-server route
+            # started honouring it (it now threads to `SurfaceFacade.add` -> the
+            # `DeterministicPromoteStage` importance>=threshold gate). Before that the route
+            # DROPPED the field, so sending it would have been a silent no-op — and omitting it
+            # here meant no SDK caller could ever get a memory promoted into MTM over the wire.
+            # `exclude_none=True` keeps this fully backward compatible: a caller that passes no
+            # `importance_score` still sends a byte-identical body to the pre-fix one.
             body = request.model_dump(
-                mode="json", include={"content", "user", "session"}, exclude_none=True
+                mode="json",
+                include={"content", "user", "session", "importance_score"},
+                exclude_none=True,
             )
             response = await self._execute(
                 "POST", "/memories", json_body=body, headers=headers
