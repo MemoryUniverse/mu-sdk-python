@@ -202,6 +202,5 @@ public.
 ## Links
 
 - Organization: [github.com/MemoryUniverse](https://github.com/MemoryUniverse)
-- How it works, in six diagrams: [Memory Universe Mechanics](https://claude.ai/code/artifact/4127edfb-bd56-462b-9cb5-2f5d3ea4e3c4)
 - Issues / discussion: use this repo's GitHub Issues
 - License: [Apache-2.0](./LICENSE)
