@@ -1,0 +1,187 @@
+# mu-sdk-python CI — the gates that exist, run the way a contributor runs them.
+#
+# THREE THINGS ABOUT THIS FILE ARE UNUSUAL, AND NONE OF THEM ARE ACCIDENTS:
+#
+# 1. It checks out TWO more repositories. This SDK depends on `mu-contracts` (and, for the
+#    `[embedded]` extra, `mu-local`) through filesystem path dependencies into ../mu-core, so a
+#    clean clone of this repo alone cannot resolve them. ../mu-sdk-js is checked out too, for the
+#    SDK-drift gate near the bottom: mu-core's checker compares BOTH SDKs in one pass and calls an
+#    absent sibling a failure. See .github/RELEASING.md for the sequence that ends this coupling.
+#
+# 2. `--locked` IS on, as of 2026-08-28. This file previously ran a bare `uv sync` with a paragraph
+#    here explaining that `uv sync --locked` failed ("The lockfile at `uv.lock` needs to be updated")
+#    because the lock predated dependencies that arrived transitively through mu-core, and telling
+#    the next person to re-check before merging. Re-checked:
+#        $ uv sync --locked --extra dev --extra embedded
+#        Resolved 179 packages in 6ms / Audited 177 packages in 0.53ms   -> exit 0
+#    The refreshed lock landed. `--locked` is therefore back on, because leaving it off once the
+#    lock is good is its own defect: nothing then catches the next drift.
+#
+# 3. The `ruff format --check` step is EXPECTED TO BE RED, and has deliberately not been softened.
+#    STILL RED, re-measured 2026-08-28: "4 files would be reformatted, 27 files already formatted".
+#    The same four files are unformatted at HEAD under the pinned ruff 0.8.6:
+#        src/mu_sdk/client.py
+#        tests/unit/test_client.py
+#        tests/integration/test_embedded_transport_namespace_parity.py
+#        tests/integration/test_middleware_auto_inject_capture.py
+#    `uv run --no-sync ruff format .` fixes all four in one commit. Making CI green by dropping
+#    the format gate would have hidden a real, one-command defect behind a checkmark.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - "dev/**"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  UV_VERSION: "0.8.13"
+  # mu-core's INTEGRATION trunk, which is not its GitHub default branch (`main` is behind it).
+  # One line to change when mu-core's default branch becomes the trunk — or when the path deps
+  # become version pins and this checkout disappears entirely.
+  MU_CORE_REF: dev/mlm-build
+  # The TS twin's trunk. Same reasoning: `main` is behind it, and the drift gate is only meaningful
+  # against the branch the twin is actually developed on.
+  MU_SDK_JS_REF: dev/sdk-build
+
+jobs:
+  gates:
+    name: gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout mu-sdk-python
+        uses: actions/checkout@v7
+        with:
+          path: mu-sdk-python
+
+      # Must land at $GITHUB_WORKSPACE/mu-core so `../mu-core/...` resolves.
+      - name: Checkout mu-core (sibling — path dependency)
+        uses: actions/checkout@v7
+        with:
+          repository: MemoryUniverse/mu-core
+          ref: ${{ env.MU_CORE_REF }}
+          path: mu-core
+
+      # Source-only, for the SDK-drift gate below. mu-core's `check-sdks` compares BOTH SDKs
+      # against the contract in one pass and reports an absent sibling as a FAILURE, so the TS twin
+      # has to be on disk here even though nothing in this repo depends on it. It is read as text
+      # by a regex parser — never installed, never imported.
+      - name: Checkout mu-sdk-js (sibling — read by the SDK-drift gate)
+        uses: actions/checkout@v7
+        with:
+          repository: MemoryUniverse/mu-sdk-js
+          ref: ${{ env.MU_SDK_JS_REF }}
+          path: mu-sdk-js
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          working-directory: mu-sdk-python
+          cache-dependency-glob: uv.lock
+
+      # `--extra embedded` is required for mypy, not optional comfort: `mu_sdk.transport` imports
+      # mu_local/mu_engine lazily for `mode="embedded"`, and without the extra installed mypy
+      # reports 20 errors that are purely "this module is not on disk". The import-linter contract
+      # `sdk-has-no-engine` still passes with the extra installed — it allowlists exactly those two
+      # lazy edges by name — so installing it does not weaken the boundary this repo exists to keep.
+      # `--locked`: a pyproject edit that never re-locked is itself a defect, and this is the only
+      # place it gets caught. Verified 2026-08-28 (banner item 2) — it exits 0 at this commit.
+      - name: Install (locked)
+        working-directory: mu-sdk-python
+        run: uv sync --locked --extra dev --extra embedded
+
+      # --no-sync on every tool call. Without it, `uv run` re-resolves and can fall back to an
+      # unpinned tool: verified here, a bare `uv run ruff` picked up 0.15.10 instead of the pinned
+      # 0.8.6 and reported a different set of format diffs.
+      - name: ruff (lint)
+        if: ${{ !cancelled() }}
+        working-directory: mu-sdk-python
+        run: uv run --no-sync ruff check .
+
+      # Expected red until the four files named in the banner are formatted. Do not remove.
+      - name: ruff-format (format)
+        if: ${{ !cancelled() }}
+        working-directory: mu-sdk-python
+        run: uv run --no-sync ruff format --check .
+
+      # The reason this package exists: a thin wire client that never imports the engine.
+      - name: import-linter (sdk-has-no-engine)
+        if: ${{ !cancelled() }}
+        working-directory: mu-sdk-python
+        run: uv run --no-sync lint-imports
+
+      - name: mypy --strict
+        if: ${{ !cancelled() }}
+        working-directory: mu-sdk-python
+        run: uv run --no-sync mypy src
+
+      - name: pytest (unit)
+        if: ${{ !cancelled() }}
+        working-directory: mu-sdk-python
+        run: uv run --no-sync pytest -m "not integration"
+
+      # THE SDK-DRIFT GATE, run where the drift is AUTHORED. It lives in mu-core
+      # (packages/mu-contracts/tests/test_sdk_wire_parity.py + scripts/wire_contract.py) and until
+      # now it ran nowhere at all: mu-core's CI did a bare checkout, so the test took three green
+      # SKIPS every run. Even with that fixed, mu-core's CI does not run on a PUSH TO THIS REPO —
+      # so a PR here that renames a field, retypes one, or invents one would have been merged and
+      # only discovered on mu-core's next commit. This is the check on the side that changes.
+      #
+      # `--no-project --with 'pydantic>=2.9,<3'`: the checker is a stdlib `ast`/regex parser whose
+      # ONLY third-party import is pydantic (via `mu_contracts.contracts.wire`, which it reaches by
+      # a sys.path bootstrap, not an install). MEASURED: it runs green in that bare environment, so
+      # this step costs one small resolve instead of installing mu-core's whole engine tree.
+      # An absent sibling is a FAILURE here, not a skip — that is the property that makes this a
+      # gate rather than a decoration.
+      - name: SDK drift vs mu-contracts (an absent sibling is a FAILURE, not a skip)
+        if: ${{ !cancelled() }}
+        working-directory: mu-core
+        run: uv run --no-project --with 'pydantic>=2.9,<3' python scripts/wire_contract.py check-sdks --verbose
+
+      # This repo's integration tier needs NO containers: it starts the real uvicorn conformance
+      # server and speaks real httpx over real TCP. Zero mocks, and it runs on a plain GitHub
+      # runner in about 30 seconds — so there is no excuse for not gating on it.
+      - name: pytest (integration — real uvicorn, real TCP, no mocks)
+        if: ${{ !cancelled() }}
+        working-directory: mu-sdk-python
+        run: uv run --no-sync pytest -m integration
+
+  build:
+    name: build (sdist + wheel)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # `uv build` does not resolve dependencies, so no sibling checkout is needed here.
+      - name: uv build
+        run: uv build
+
+      - name: Show what was built
+        run: ls -l dist/
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14

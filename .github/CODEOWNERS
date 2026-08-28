@@ -1,0 +1,18 @@
+# Code owners for mu-sdk-python.
+#
+# GitHub silently IGNORES an entry naming an account without write access here, and an ignored line
+# looks exactly like a working one — so only verified accounts are listed. Add teams
+# (@MemoryUniverse/<team>) once they exist; never add a name speculatively.
+
+*                     @TRextabat
+
+# The wire surface. A change here is a contract change that mu-sdk-js must mirror, and that the
+# server plane must already accept.
+/src/mu_sdk/models/   @TRextabat
+/src/mu_sdk/client.py @TRextabat
+
+# The boundary this package exists to keep, and the gates that enforce it.
+/.importlinter        @TRextabat
+/.github/             @TRextabat
+/pyproject.toml       @TRextabat
+/uv.lock              @TRextabat

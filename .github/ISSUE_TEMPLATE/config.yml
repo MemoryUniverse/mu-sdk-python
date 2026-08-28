@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/MemoryUniverse/mu-sdk-python/security/advisories/new
+    about: Report privately. Never in a public issue.
+  - name: How to contribute, and the two known-red gates
+    url: https://github.com/MemoryUniverse/mu-sdk-python/blob/HEAD/.github/CONTRIBUTING.md
+    about: The two-repo setup, the exact gate commands, and what is red at HEAD and why.
+  - name: mu-sdk-js — the JavaScript/TypeScript SDK
+    url: https://github.com/MemoryUniverse/mu-sdk-js
+    about: Same wire surface, other language. A wire change usually belongs in both.

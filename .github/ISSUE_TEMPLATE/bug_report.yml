@@ -1,0 +1,80 @@
+name: Bug report
+description: mu-sdk behaves differently than it says it does.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Never paste real tokens, memory content or personal data into this form.** Redact, and
+        say what you redacted.
+
+        Security problem? Do not file it here — see
+        [SECURITY.md](https://github.com/MemoryUniverse/mu-sdk-python/blob/HEAD/.github/SECURITY.md).
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: The call you made, and what came back instead of what you expected.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+      description: If the README, a docstring or a type signature says otherwise, quote it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: The smallest snippet that shows it. Redact the token.
+      render: python
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Which mode
+      options:
+        - "remote (hosted plane)"
+        - "local_server (mu-engine-server over the wire)"
+        - "embedded (the [embedded] extra, engine in-process)"
+        - not sure
+    validations:
+      required: true
+
+  - type: input
+    id: commit
+    attributes:
+      label: Commit (this repo)
+      description: "`git rev-parse --short HEAD`. There is no released version yet, so the commit is the version. If you installed something called `mu-sdk` from PyPI, that is a different, unrelated project — see SECURITY.md."
+    validations:
+      required: true
+
+  - type: input
+    id: core-commit
+    attributes:
+      label: Commit of the sibling mu-core checkout
+      description: "`git -C ../mu-core rev-parse --short HEAD`."
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Traceback or wire trace
+      description: Redacted. Text, not a screenshot. Strip the Authorization header.
+      render: shell
+
+  - type: checkboxes
+    id: hygiene
+    attributes:
+      label: Before submitting
+      options:
+        - label: I removed every token, credential, memory content and personal datum from everything above.
+          required: true

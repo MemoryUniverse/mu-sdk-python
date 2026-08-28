@@ -1,0 +1,15 @@
+# GitHub Actions only. The Python tree here is resolved by uv, pinned in uv.lock, and reached
+# through a cross-repo path dependency Dependabot cannot see. Python updates are made with
+# `uv lock --upgrade` and reviewed as one change.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "chore(ci)"
+    labels:
+      - dependencies
+      - ci
+    open-pull-requests-limit: 3

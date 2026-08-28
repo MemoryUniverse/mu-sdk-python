@@ -75,25 +75,74 @@ responses. `asyncio.CancelledError` always propagates untouched, never swallowed
 
 ## Quickstart
 
-`mu-sdk-python` is not on PyPI yet (the package name will be `mu-sdk`), and its `mu-contracts`
-dependency is currently a relative path dependency onto the sibling `mu-core` repo rather than a
-published version — an honest rough edge of pre-release, multi-repo development. For now:
+> **Do not `pip install mu-sdk`.** `mu-sdk` on PyPI is **not this project**: it is
+> [`orvice/mu-py-sdk`](https://pypi.org/project/mu-sdk/) 0.0.3, "ss-panel mu api sdk for python",
+> uploaded 2016-12-15 and never updated. It installs cleanly, ships no importable module, and is
+> unrelated to Memory Universe. Nothing here is published to PyPI yet; the final distribution name
+> is still being decided precisely because of this collision. Use one of the two routes below.
+
+`mu-sdk-python` is not on PyPI, and neither is its `mu-contracts` dependency — that is currently a
+relative path dependency onto the sibling `mu-core` repo rather than a published version, an honest
+rough edge of pre-release, multi-repo development.
+
+**Route 1 — clone `mu-core` as a sibling, then `uv sync`.** The two repos must sit side by side in
+the same parent directory: `pyproject.toml` resolves `mu-contracts` as `../mu-core/packages/mu-contracts`,
+relative to *that* file. Clone this repo alone and `uv sync` stops with `Distribution not found at:
+file:///.../mu-core/packages/mu-contracts`.
 
 ```bash
-git clone https://github.com/MemoryUniverse/mu-core
+git clone -b dev/mlm-build https://github.com/MemoryUniverse/mu-core
 git clone https://github.com/MemoryUniverse/mu-sdk-python
 cd mu-sdk-python
 uv sync --extra dev
 ```
+
+**`-b dev/mlm-build` is not decoration.** GitHub's default branch on `mu-core` is `main`, and
+`main` still carries the empty `mu_contracts.contracts` scaffold — `__init__.py` and nothing else.
+Clone `mu-core` without the branch and the install still *succeeds*; the failure surfaces later, at
+the first import:
+
+```
+$ python -c "from mu_sdk import MemoryClient"
+  File ".../mu_sdk/client.py", line 91, in <module>
+    from mu_contracts.contracts.requests import AddRequest as _CanonicalAddRequest
+ModuleNotFoundError: No module named 'mu_contracts.contracts.requests'
+```
+
+`dev/mlm-build` is `mu-core`'s trunk and is what this SDK is built and tested against. Landing it
+on `main` is the real fix and is the repository owner's call.
+
+**Route 2 — install straight from git, no clone, no registry.** `--no-sources` is required: the
+`[tool.uv.sources]` table is a *development* override, and uv otherwise honours it even over a git
+URL and tries to resolve `../mu-core/...` against the git remote.
+
+```bash
+uv venv --python 3.12 && source .venv/bin/activate
+uv pip install --no-sources \
+  "mu-contracts @ git+https://github.com/MemoryUniverse/mu-core@dev/mlm-build#subdirectory=packages/mu-contracts" \
+  "mu-sdk       @ git+https://github.com/MemoryUniverse/mu-sdk-python"
+```
+
+`@dev/mlm-build` on the `mu-core` URL is required here for exactly the reason spelled out under
+Route 1; `mu-sdk-python`'s own default branch is its trunk and needs no ref.
+
+Both URLs are required: this package's metadata names `mu-contracts`, and with nothing published
+under that name a resolver has nowhere else to find it. Naming the git URL for `mu-sdk` explicitly
+is also what keeps the 2016 PyPI package above out of your environment.
 
 The client needs something that speaks the Memory Universe wire contract, and a credential for it.
 The shortest real path to both is `mu-core`'s open reference server, which mints a local bearer
 token for you:
 
 ```bash
+git clone -b dev/mlm-build https://github.com/MemoryUniverse/mu-core   # skip if Route 1 cloned it
 cd mu-core/packages/mu-engine-server
 make up          # mints ~/.memory-universe/engine-server.token, then brings the stack up on :8300
 ```
+
+The branch matters here too, and differently: `packages/mu-engine-server/` **does not exist on
+`main` at all**, so a default-branch clone gets you `cd: no such file or directory` instead of a
+server.
 
 Use `make up`, not a bare `docker compose up`: every route but `/health` is bearer-authenticated,
 and `mint-token` is a prerequisite of `up`. Skipping it gets you a healthy server that `401`s
@@ -112,7 +161,7 @@ async def main() -> None:
         await client.add("The staging DB migration runs Tuesdays at 02:00 UTC.")
         result = await client.recall("when does the migration run?")
         for item in result.items:
-            print(item.score, item.content)
+            print(item.fused_score, item.content)
 
 asyncio.run(main())
 ```

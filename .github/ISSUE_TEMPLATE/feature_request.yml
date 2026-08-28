@@ -1,0 +1,51 @@
+name: Feature request or design question
+description: Something the SDK should do, or a decision that looks wrong from outside.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        `mu-sdk` is deliberately **thin**: a wire client with no engine, no stores, no strategies and
+        no embedder. "The SDK should compute/rank/extract X locally" is almost always a request for
+        the engine (`mu-core`) or for a new server route, not for this package — that thinness is
+        why an application can depend on this without inheriting a machine-learning stack.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that the SDK makes hard or impossible?
+    validations:
+      required: true
+
+  - type: textarea
+    id: today
+    attributes:
+      label: What you do today instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you think should happen
+      description: Optional. A method signature is worth a paragraph.
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Where does this belong
+      options:
+        - A client-side ergonomic — belongs in this SDK
+        - Needs a new or changed server route
+        - Is really engine behaviour — mu-core
+        - Not sure
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: parity
+    attributes:
+      label: Cross-language parity
+      options:
+        - label: I understand this SDK's wire surface is mirrored in mu-sdk-js, and a change here usually needs one there too.

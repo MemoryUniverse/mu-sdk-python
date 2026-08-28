@@ -9,16 +9,33 @@ description = "Memory Universe — Python developer SDK (async wire client: add/
 requires-python = ">=3.12,<3.13"
 license = "Apache-2.0"
 readme = "README.md"
+# No "License ::" trove classifier on purpose: PEP 639 replaced it with the `license` expression
+# above, and declaring both is the deprecated form.
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
+]
 dependencies = [
-    # Shared wire vocabulary ONLY (Namespace/Visibility/Tier + the error-hierarchy vocabulary) —
-    # local path dep: mu-contracts is not yet published (PACKAGING-v2 §5.5, "day one" pin is
-    # pending the actual PyPI/registry push). Pin the range once published: "mu-contracts>=0.1,<0.2".
-    "mu-contracts",
+    # Shared wire vocabulary ONLY (Namespace/Visibility/Tier + the error-hierarchy vocabulary).
+    # The range is now WRITTEN, not a comment (OSS-GATE-0828): `[tool.uv.sources]` below is a
+    # dev-only override that never reaches wheel metadata, so a bare `mu-contracts` shipped this
+    # SDK with "any version, forever" as its only stated compatibility statement.
+    "mu-contracts>=0.1.0,<0.2.0",
     "httpx>=0.27,<1",
     "pydantic>=2.9,<3",
     "pydantic-settings>=2.6,<3",
     "tenacity>=9.0,<10",
 ]
+
+# Open-source metadata (OSS-GATE-0828) — a published page with no link back to the source is not
+# an open-source release.
+[project.urls]
+Homepage = "https://github.com/MemoryUniverse"
+Repository = "https://github.com/MemoryUniverse/mu-sdk-python"
+Issues = "https://github.com/MemoryUniverse/mu-sdk-python/issues"
 
 [project.optional-dependencies]
 dev = [
@@ -37,7 +54,7 @@ dev = [
 # scope) so the DEFAULT install (no extra) still satisfies `sdk-has-no-engine` — grep-verified, see
 # this task's own report. Installing this extra is the only way `mode="embedded"` becomes usable.
 embedded = [
-    "mu-local",
+    "mu-local>=0.1.0,<0.2.0",
 ]
 
 [build-system]
@@ -48,6 +65,13 @@ build-backend = "hatchling.build"
 packages = ["src/mu_sdk"]
 
 [tool.uv.sources]
+# DEV-ONLY override; never reaches wheel metadata. Two stranger-visible consequences, both
+# verified 2026-08-28 and both documented in README.md: (1) `git clone mu-sdk-python && uv sync`
+# alone fails ("Distribution not found at: .../mu-core/packages/mu-contracts") — mu-core must be
+# cloned as a SIBLING first; (2) uv honours this table even when this repo is consumed as a git
+# URL and rewrites the path against the git remote, so the registry-free route is
+# `uv pip install --no-sources` with explicit git URLs. See OSS-GATE-0828.md.
+#
 # Path dependency onto the sibling repo's mu-contracts distribution (PACKAGING-v2 §1.2: mu-sdk-python
 # "may depend on... mu-contracts — only"). Absolute path: the two repos are siblings under mu_project/,
 # not a uv workspace (mu-sdk-python is its own repo per the ratified 5-repo split, PACKAGING-v2 banner
