@@ -462,9 +462,7 @@ class MemoryClient:
                 include={"content", "user", "session", "importance_score"},
                 exclude_none=True,
             )
-            response = await self._execute(
-                "POST", "/memories", json_body=body, headers=headers
-            )
+            response = await self._execute("POST", "/memories", json_body=body, headers=headers)
             return _parse_add_response(response.json_body)
 
         # ---- shared/legacy wire path — byte-identical to this method's pre-R2 behavior ----
@@ -766,9 +764,7 @@ class MemoryClient:
             body["user"] = user
         if session is not None:
             body["session"] = session
-        response = await self._execute(
-            "POST", f"/v1/memories/{memory_id}/promote", json_body=body
-        )
+        response = await self._execute("POST", f"/v1/memories/{memory_id}/promote", json_body=body)
         return MemoryVerbResult.model_validate(response.json_body)
 
     async def demote(
@@ -792,9 +788,7 @@ class MemoryClient:
             body["user"] = user
         if session is not None:
             body["session"] = session
-        response = await self._execute(
-            "POST", f"/v1/memories/{memory_id}/demote", json_body=body
-        )
+        response = await self._execute("POST", f"/v1/memories/{memory_id}/demote", json_body=body)
         return MemoryVerbResult.model_validate(response.json_body)
 
     async def update(
@@ -881,9 +875,7 @@ class MemoryClient:
             private_configured=self._private_configured,
             shared_configured=self._shared_configured,
         )
-        effective_limit = (
-            limit if limit is not None else self._settings.default_consolidate_limit
-        )
+        effective_limit = limit if limit is not None else self._settings.default_consolidate_limit
         if self._private_configured:
             request = _CanonicalConsolidateRequest(
                 user=user, session=session, limit=effective_limit

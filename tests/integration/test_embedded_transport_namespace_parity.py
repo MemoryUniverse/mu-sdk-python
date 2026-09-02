@@ -102,12 +102,12 @@ async def test_embedded_recall_does_not_cross_user_namespaces(client: MemoryClie
 
     ada_recall = await client.recall(ada_only_marker, user="ada", session="s1", limit=10)
     ada_contents = [item.content for item in ada_recall.items]
-    assert any(ada_only_marker in c for c in ada_contents), (
-        "ada's own recall(user='ada') did not surface her own just-added content."
-    )
-    assert not any(bo_only_marker in c for c in ada_contents), (
-        "ada's recall(user='ada') surfaced bo's content — namespace isolation broken (CO-5)."
-    )
+    assert any(
+        ada_only_marker in c for c in ada_contents
+    ), "ada's own recall(user='ada') did not surface her own just-added content."
+    assert not any(
+        bo_only_marker in c for c in ada_contents
+    ), "ada's recall(user='ada') surfaced bo's content — namespace isolation broken (CO-5)."
 
     bo_recall = await client.recall(bo_only_marker, user="bo", session="s2", limit=10)
     bo_contents = [item.content for item in bo_recall.items]

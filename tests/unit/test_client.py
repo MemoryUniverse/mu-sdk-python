@@ -384,9 +384,7 @@ async def test_demote_posts_to_the_real_route() -> None:
 
 
 async def test_update_puts_new_content_and_returns_new_memory() -> None:
-    transport = _transport(
-        {"memory_id": "mem-new", "verb": "update", "superseded_id": "mem-1"}
-    )
+    transport = _transport({"memory_id": "mem-new", "verb": "update", "superseded_id": "mem-1"})
     async with MemoryClient(settings=_settings(), transport=transport) as client:
         result = await client.update("mem-1", "Ada lives in Berlin")
     assert result.memory_id == "mem-new" and result.superseded_id == "mem-1"

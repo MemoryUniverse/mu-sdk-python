@@ -1,5 +1,22 @@
 # mu-sdk-python CI — the gates that exist, run the way a contributor runs them.
 #
+# THIS WORKFLOW IS RED AT dev/sdk-build@6c03b84, AND THE REASONS ARE NAMED, NOT HIDDEN.
+# Measured, run 33192202356 (2026-08-28): `ruff-format`, `pytest (unit)` and the old
+# `pytest (integration)` step failed; `SDK drift vs mu-contracts` PASSED. Two of the three are
+# defects in this package's own source, and neither is fixed by editing this file:
+#   * `ruff format --check` — 4 files, re-measured against pushed HEAD under the pinned ruff
+#     0.8.6: src/mu_sdk/client.py, tests/unit/test_client.py,
+#     tests/integration/test_embedded_transport_namespace_parity.py,
+#     tests/integration/test_middleware_auto_inject_capture.py. One command fixes all four:
+#     `uv run --no-sync ruff format .`
+#   * `pytest (unit)` — 2 tests in tests/unit/test_client.py construct a client with
+#     mode='local_server' and no auth, so they read $HOME/.memory-universe/engine-server.token and
+#     raise EngineServerTokenMissingError on any machine that has never run `make up`. A UNIT test
+#     that depends on the developer's home directory is the defect; the fix belongs in that file
+#     (pass an explicit BearerAuth), not here.
+# The third is fixed below, in this file, because it WAS this file's defect: the integration step
+# claimed a tier that needs no containers and then ran two tests that need Valkey. See the step.
+#
 # THREE THINGS ABOUT THIS FILE ARE UNUSUAL, AND NONE OF THEM ARE ACCIDENTS:
 #
 # 1. It checks out TWO more repositories. This SDK depends on `mu-contracts` (and, for the
@@ -18,14 +35,8 @@
 #    lock is good is its own defect: nothing then catches the next drift.
 #
 # 3. The `ruff format --check` step is EXPECTED TO BE RED, and has deliberately not been softened.
-#    STILL RED, re-measured 2026-08-28: "4 files would be reformatted, 27 files already formatted".
-#    The same four files are unformatted at HEAD under the pinned ruff 0.8.6:
-#        src/mu_sdk/client.py
-#        tests/unit/test_client.py
-#        tests/integration/test_embedded_transport_namespace_parity.py
-#        tests/integration/test_middleware_auto_inject_capture.py
-#    `uv run --no-sync ruff format .` fixes all four in one commit. Making CI green by dropping
-#    the format gate would have hidden a real, one-command defect behind a checkmark.
+#    See the banner above for the four files and the one command that fixes them. Making CI green
+#    by dropping the format gate would have hidden a real, one-command defect behind a checkmark.
 name: CI
 
 on:
@@ -54,6 +65,47 @@ env:
   MU_SDK_JS_REF: dev/sdk-build
 
 jobs:
+  # THE SDK-DRIFT GATE, AS ITS OWN CHECK — the one gate that protects the WIRE, reported on its
+  # own instead of as one line inside a job that is red for two unrelated reasons (see the banner).
+  # MEASURED, run 33192202356: this step was GREEN while `gates` was RED, so "did the wire change
+  # break the contract?" was answerable only by opening the log. It installs nothing — the checker
+  # is a stdlib ast/regex parser whose only third-party import is pydantic — so a whole extra job
+  # costs well under a minute.
+  sdk-drift:
+    name: sdk-drift (this SDK vs mu-contracts)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout mu-sdk-python
+        uses: actions/checkout@v7
+        with:
+          path: mu-sdk-python
+
+      - name: Checkout mu-core (the contract this package mirrors)
+        uses: actions/checkout@v7
+        with:
+          repository: MemoryUniverse/mu-core
+          ref: ${{ env.MU_CORE_REF }}
+          path: mu-core
+
+      # `check-sdks` compares BOTH SDKs in one pass and calls an absent sibling a FAILURE, so the
+      # TS twin has to be on disk even though nothing here depends on it.
+      - name: Checkout mu-sdk-js (sibling — read as source text)
+        uses: actions/checkout@v7
+        with:
+          repository: MemoryUniverse/mu-sdk-js
+          ref: ${{ env.MU_SDK_JS_REF }}
+          path: mu-sdk-js
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: SDK drift vs mu-contracts (an absent sibling is a FAILURE, not a skip)
+        working-directory: mu-core
+        run: uv run --no-project --with 'pydantic>=2.9,<3' python scripts/wire_contract.py check-sdks --verbose
+
   gates:
     name: gates
     runs-on: ubuntu-latest
@@ -150,13 +202,96 @@ jobs:
         working-directory: mu-core
         run: uv run --no-project --with 'pydantic>=2.9,<3' python scripts/wire_contract.py check-sdks --verbose
 
-      # This repo's integration tier needs NO containers: it starts the real uvicorn conformance
-      # server and speaks real httpx over real TCP. Zero mocks, and it runs on a plain GitHub
-      # runner in about 30 seconds — so there is no excuse for not gating on it.
-      - name: pytest (integration — real uvicorn, real TCP, no mocks)
+      # THE INTEGRATION TIER IS TWO TIERS, AND THIS FILE USED TO CLAIM IT WAS ONE.
+      #
+      # It said: "needs NO containers ... runs on a plain GitHub runner in about 30 seconds — so
+      # there is no excuse for not gating on it", and ran the whole `integration` marker. MEASURED,
+      # run 33192202356 on dev/sdk-build@6c03b84, the step that claim describes:
+      #     4 failed, 33 passed, 92 deselected, 5 warnings in 26.60s
+      #     FAILED tests/integration/test_embedded_transport_namespace_parity.py::... -
+      #       StageExecutionError: stage 'write_stm' failed: [Errno 111] Connect call failed
+      #       ('127.0.0.1', 16379)
+      #     FAILED tests/integration/test_middleware_auto_inject_capture.py::... -
+      #       ConnectionError("Error 111 connecting to 127.0.0.1:16379")
+      # Port 16379 is Valkey. Those two files drive the EMBEDDED transport, which is the real
+      # `mu-local` engine writing to the real store tier — the marker's own description
+      # ("real uvicorn conformance server, real httpx over real TCP") does not cover them.
+      #
+      # So the marker is split HERE, explicitly, rather than left as a red step everyone learns to
+      # ignore. The container-free half gates on every push. The store-backed half runs where the
+      # stores are — the dev VM, `infra/mu-vm/vm_test.sh mu-sdk-python -m integration` (that script
+      # now installs the `embedded` extra, without which those two files cannot even import).
+      # Standing Valkey/Qdrant/FalkorDB up as service containers here is worth doing and is NOT
+      # done blind: it needs one measured run to know the full store set, and a half-real second
+      # conformance surface is worse than an honest split.
+      #
+      # The split is INVENTORIED, not implicit: the step below fails if `tests/integration/` holds
+      # a file that is in neither list, so a new integration test cannot quietly land on the
+      # VM-only side (or quietly be dropped from CI) without someone deciding which it is.
+      - name: integration split is complete (a new test cannot land unclassified)
         if: ${{ !cancelled() }}
         working-directory: mu-sdk-python
-        run: uv run --no-sync pytest -m integration
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          import sys
+
+          CI_RUNNABLE = {
+              "test_memory_client_conformance.py",
+              "test_retry_conformance.py",
+              "test_transport_real_network.py",
+          }
+          VM_ONLY = {  # embedded transport -> real mu-local engine -> real Valkey/Qdrant/FalkorDB
+              "test_embedded_transport_namespace_parity.py",
+              "test_middleware_auto_inject_capture.py",
+          }
+          on_disk = {
+              p.name
+              for p in pathlib.Path("tests/integration").glob("test_*.py")
+          }
+          unclassified = sorted(on_disk - CI_RUNNABLE - VM_ONLY)
+          vanished = sorted((CI_RUNNABLE | VM_ONLY) - on_disk)
+          if unclassified:
+              sys.exit(
+                  f"tests/integration/{unclassified} is in neither list. Decide: does it need the "
+                  "real store tier (VM_ONLY, and add it to the --ignore list below) or not "
+                  "(CI_RUNNABLE)? An unclassified file would run here and fail on a missing store, "
+                  "or be silently skipped — both are how this gate stopped meaning anything."
+              )
+          if vanished:
+              sys.exit(f"these are listed but no longer exist: {vanished} — prune the lists.")
+          print(f"integration split OK: {len(CI_RUNNABLE)} here, {len(VM_ONLY)} on the VM.")
+          PY
+
+      # The container-free half. Real uvicorn, real httpx, real TCP, zero mocks — and the RESULT is
+      # asserted, not read: a run that collected nothing, or that skipped its way to green, exits
+      # non-zero here. Same idiom as mu-core's SDK-drift step, for the same reason.
+      - name: pytest (integration — real uvicorn, real TCP, no mocks, no stores)
+        if: ${{ !cancelled() }}
+        working-directory: mu-sdk-python
+        run: |
+          uv run --no-sync pytest -m integration \
+            --ignore=tests/integration/test_embedded_transport_namespace_parity.py \
+            --ignore=tests/integration/test_middleware_auto_inject_capture.py \
+            -p no:cacheprovider --junit-xml=integration.xml
+          python3 - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          root = ET.parse("integration.xml").getroot()
+          suites = root.findall("testsuite") or [root]
+          tests = sum(int(s.get("tests", 0)) for s in suites)
+          skipped = sum(int(s.get("skipped", 0)) for s in suites)
+          print(f"integration (container-free): {tests} test(s) collected, {skipped} skipped")
+          if tests == 0:
+              sys.exit("THE INTEGRATION TIER COLLECTED NOTHING — it is not gating anything.")
+          if skipped:
+              sys.exit(
+                  f"{skipped} of {tests} integration test(s) SKIPPED. This half of the tier is the "
+                  "half that needs nothing but a runner, so a skip here is a defect, not an honest "
+                  "report of a machine that cannot host the run."
+              )
+          PY
 
   build:
     name: build (sdist + wheel)

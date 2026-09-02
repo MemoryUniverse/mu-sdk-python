@@ -124,8 +124,7 @@ async def test_middleware_auto_injects_and_auto_captures_across_turns(
     # The before-step ran on an EMPTY store, so turn 1's prompt reached the stub un-augmented —
     # the injection point exists but had nothing to inject yet (the honest empty-store behavior).
     assert seen_prompts[0] == turn1_prompt, (
-        "turn 1 prompt was altered though the store was empty "
-        f"(stub saw: {seen_prompts[0]!r})"
+        "turn 1 prompt was altered though the store was empty " f"(stub saw: {seen_prompts[0]!r})"
     )
 
     # --- Turn 2: ask about it. App STILL makes NO recall call. Turn 2's OWN text has no fact. ---
@@ -141,9 +140,9 @@ async def test_middleware_auto_injects_and_auto_captures_across_turns(
         "middleware did NOT auto-inject turn 1's fact into turn 2's prompt "
         f"(prompt the stub saw: {turn2_seen!r})"
     )
-    assert "Relevant memory from earlier" in turn2_seen, (
-        "the injected block's render marker is absent — the fact did not arrive via injection"
-    )
+    assert (
+        "Relevant memory from earlier" in turn2_seen
+    ), "the injected block's render marker is absent — the fact did not arrive via injection"
     assert turn2_seen != turn2_prompt, "turn 2 prompt was passed through un-augmented"
     assert fact_value in turn2_answer, "stub could not answer from the injected fact"
 
