@@ -413,7 +413,13 @@ class EmbeddedTransport:
         return TransportResponse(status_code=201, json_body=payload)
 
     async def _recall(self, body: dict[str, Any], query: dict[str, Any]) -> TransportResponse:
-        from mu_engine.storage.domain.memory import MemoryTier
+        # The SDK is a WIRE CLIENT and must never depend on the engine (CLAUDE.md: "mu-sdk
+        # + mu-sdk-ts (wire clients, no engine)"). `mu_engine` is not a declared dependency
+        # here, so this import raised `ModuleNotFoundError` on any install that did not also
+        # happen to have mu-engine on the path — which is every real consumer, and CI.
+        # `Tier` is the shared wire vocabulary in mu-contracts and carries the identical
+        # values ("stm", "mtm", "ltm"), verified against the engine enum before switching.
+        from mu_contracts.domain.model.memory import Tier
 
         # R2 (mu-sdk-python client.py reconciliation): the private-plane wire path now sends
         # `tier` as a canonical `RecallRequest` BODY field (matching the real mu-engine-server's
@@ -422,7 +428,7 @@ class EmbeddedTransport:
         # wire shape's convention). Both are checked here (body first) so this class keeps working
         # regardless of which of the two shapes a caller's `MemoryClient` instance is sending.
         tier_param = body.get("tier") or query.get("tier")
-        tier = MemoryTier(tier_param) if tier_param else None
+        tier = Tier(tier_param) if tier_param else None
         # user/session (CO-5 fix) — `client.py`'s private-plane `recall()` wire dump includes
         # both (`include={"text", "user", "session", "tier", "limit"}`); forwarding them here
         # keeps embedded recall scoped to the caller's own namespace instead of always reading

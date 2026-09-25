@@ -37,6 +37,11 @@ forbidden_modules =
     mu_local
     mu_server
     mu_client
+# `mu_sdk.transport -> mu_engine` was allowlisted here and is no longer needed: `_recall` used to
+# import `mu_engine.storage.domain.memory.MemoryTier` to parse a wire value, which made the public
+# wire client depend on the engine. mu_engine is not a declared dependency of this package, so that
+# import raised ModuleNotFoundError on every install without the `embedded` extra — including CI's
+# own unit job, which is where it was finally caught. It now uses `Tier` from mu-contracts, the
+# shared wire vocabulary, with identical values. Only the embedded-mode edge remains.
 ignore_imports =
     mu_sdk.transport -> mu_local
-    mu_sdk.transport -> mu_engine
