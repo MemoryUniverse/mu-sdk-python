@@ -37,11 +37,12 @@ forbidden_modules =
     mu_local
     mu_server
     mu_client
-# `mu_sdk.transport -> mu_engine` was allowlisted here and is no longer needed: `_recall` used to
-# import `mu_engine.storage.domain.memory.MemoryTier` to parse a wire value, which made the public
-# wire client depend on the engine. mu_engine is not a declared dependency of this package, so that
-# import raised ModuleNotFoundError on every install without the `embedded` extra — including CI's
-# own unit job, which is where it was finally caught. It now uses `Tier` from mu-contracts, the
-# shared wire vocabulary, with identical values. Only the embedded-mode edge remains.
+# Both edges are EMBEDDED-MODE ONLY and deliberately lazy. `_recall`'s `mu_engine` import used to
+# sit at the top of the method, so the whole embedded-recall path required an engine this package
+# does not depend on — it raised ModuleNotFoundError on every install without the `embedded` extra,
+# which is what had CI's unit job red. It is now inside `if tier_param:`, where the engine's own
+# `MemoryTier` is genuinely the type `mu_local.recall` wants. A caller that passes no tier never
+# imports it.
 ignore_imports =
     mu_sdk.transport -> mu_local
+    mu_sdk.transport -> mu_engine

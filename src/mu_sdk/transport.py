@@ -413,14 +413,6 @@ class EmbeddedTransport:
         return TransportResponse(status_code=201, json_body=payload)
 
     async def _recall(self, body: dict[str, Any], query: dict[str, Any]) -> TransportResponse:
-        # The SDK is a WIRE CLIENT and must never depend on the engine (CLAUDE.md: "mu-sdk
-        # + mu-sdk-ts (wire clients, no engine)"). `mu_engine` is not a declared dependency
-        # here, so this import raised `ModuleNotFoundError` on any install that did not also
-        # happen to have mu-engine on the path — which is every real consumer, and CI.
-        # `Tier` is the shared wire vocabulary in mu-contracts and carries the identical
-        # values ("stm", "mtm", "ltm"), verified against the engine enum before switching.
-        from mu_contracts.domain.model.memory import Tier
-
         # R2 (mu-sdk-python client.py reconciliation): the private-plane wire path now sends
         # `tier` as a canonical `RecallRequest` BODY field (matching the real mu-engine-server's
         # own route, which has no `?tier=` query param at all) instead of a query param — this
@@ -428,7 +420,19 @@ class EmbeddedTransport:
         # wire shape's convention). Both are checked here (body first) so this class keeps working
         # regardless of which of the two shapes a caller's `MemoryClient` instance is sending.
         tier_param = body.get("tier") or query.get("tier")
-        tier = Tier(tier_param) if tier_param else None
+        # `self._memory.recall` is mu_local's and is typed on the ENGINE's `MemoryTier`, so that
+        # is the right type to pass — but only when a tier was actually requested. Importing it at
+        # the top of this method made the whole embedded-recall path require `mu_engine`, which is
+        # NOT a declared dependency of this wire client (CLAUDE.md: "mu-sdk + mu-sdk-ts (wire
+        # clients, no engine)"). It therefore raised `ModuleNotFoundError` on every install without
+        # the `embedded` extra, and that is what had CI's unit job red: the two default-limit tests
+        # here pass no tier at all and still paid for the import. Deferring it into the branch keeps
+        # the type correct where it is used and the dependency where it belongs.
+        tier = None
+        if tier_param:
+            from mu_engine.storage.domain.memory import MemoryTier
+
+            tier = MemoryTier(tier_param)
         # user/session (CO-5 fix) — `client.py`'s private-plane `recall()` wire dump includes
         # both (`include={"text", "user", "session", "tier", "limit"}`); forwarding them here
         # keeps embedded recall scoped to the caller's own namespace instead of always reading
