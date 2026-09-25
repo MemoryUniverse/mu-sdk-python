@@ -415,6 +415,7 @@ async def test_private_plane_add_sends_importance_score_on_the_wire() -> None:
     importance>=threshold gate), so excluding it here meant no SDK caller could ever get a memory
     promoted into MTM over the wire — the server plane was effectively STM-only.
     """
+    from mu_sdk import BearerAuth
     from mu_sdk.config import SdkConfig
 
     transport = _transport(
@@ -427,8 +428,15 @@ async def test_private_plane_add_sends_importance_score_on_the_wire() -> None:
             "events_emitted": [],
         }
     )
+    # Explicit auth, because `mode="local_server"` with none falls back to reading
+    # `~/.memory-universe/engine-server.token` off the real filesystem. That file exists on a
+    # developer box that has run `make up` and does NOT exist on a CI runner, so these two tests
+    # passed locally and failed in CI for a reason unrelated to the wire body they assert.
+    # A unit test must not depend on ambient machine state.
     config = SdkConfig(mode="local_server", endpoint="http://unit-test.invalid")
-    async with MemoryClient(config=config, transport=transport) as client:
+    async with MemoryClient(
+        config=config, transport=transport, auth=BearerAuth("unit-test")
+    ) as client:
         await client.add("hello", user="u1", session="s1", importance_score=0.95)
 
     body = transport.calls[0]["json_body"]
@@ -444,6 +452,7 @@ async def test_private_plane_add_omits_importance_score_when_not_supplied() -> N
     """Backward-compatibility guard: a caller that passes no `importance_score` must still produce
     a byte-identical body to the pre-change one (`exclude_none=True` — no explicit null, no
     injected default), so nothing about the previously-verified wire shape moved."""
+    from mu_sdk import BearerAuth
     from mu_sdk.config import SdkConfig
 
     transport = _transport(
@@ -456,8 +465,15 @@ async def test_private_plane_add_omits_importance_score_when_not_supplied() -> N
             "events_emitted": [],
         }
     )
+    # Explicit auth, because `mode="local_server"` with none falls back to reading
+    # `~/.memory-universe/engine-server.token` off the real filesystem. That file exists on a
+    # developer box that has run `make up` and does NOT exist on a CI runner, so these two tests
+    # passed locally and failed in CI for a reason unrelated to the wire body they assert.
+    # A unit test must not depend on ambient machine state.
     config = SdkConfig(mode="local_server", endpoint="http://unit-test.invalid")
-    async with MemoryClient(config=config, transport=transport) as client:
+    async with MemoryClient(
+        config=config, transport=transport, auth=BearerAuth("unit-test")
+    ) as client:
         await client.add("hello", user="u1", session="s1")
 
     assert transport.calls[0]["json_body"] == {
