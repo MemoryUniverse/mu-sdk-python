@@ -481,3 +481,68 @@ async def test_private_plane_add_omits_importance_score_when_not_supplied() -> N
         "user": "u1",
         "session": "s1",
     }
+
+
+# ---- occurred_at wire pass-through (private/engine-server plane, AD-312) ----------------------
+
+
+async def test_private_plane_add_sends_occurred_at_on_the_wire() -> None:
+    """AD-312 (mu-core): the WORLD-TIME an activity occurred, asserted by the caller. Same
+    regression shape as `importance_score` above — joined the wire `include=` set in the same
+    change that made `mu_engine_server`'s route honour it (`routes/memories.py::add_memory`)."""
+    from mu_sdk import BearerAuth
+    from mu_sdk.config import SdkConfig
+
+    transport = _transport(
+        {
+            "memory_id": "mem-1",
+            "content_hash": "abc123",
+            "promoted": True,
+            "tiers_written": ["stm", "mtm"],
+            "namespace": "mu/default/local/private/u1/s1",
+            "events_emitted": [],
+        }
+    )
+    config = SdkConfig(mode="local_server", endpoint="http://unit-test.invalid")
+    occurred_at = datetime(2023, 5, 7, tzinfo=UTC)
+    async with MemoryClient(
+        config=config, transport=transport, auth=BearerAuth("unit-test")
+    ) as client:
+        await client.add("hello", user="u1", session="s1", occurred_at=occurred_at)
+
+    body = transport.calls[0]["json_body"]
+    assert body == {
+        "content": "hello",
+        "user": "u1",
+        "session": "s1",
+        "occurred_at": "2023-05-07T00:00:00Z",
+    }
+
+
+async def test_private_plane_add_omits_occurred_at_when_not_supplied() -> None:
+    """Backward-compatibility guard, same discipline as `importance_score`'s own: a caller that
+    passes no `occurred_at` must still produce a byte-identical body to the pre-AD-312 one."""
+    from mu_sdk import BearerAuth
+    from mu_sdk.config import SdkConfig
+
+    transport = _transport(
+        {
+            "memory_id": "mem-1",
+            "content_hash": "abc123",
+            "promoted": False,
+            "tiers_written": ["stm"],
+            "namespace": "mu/default/local/private/u1/s1",
+            "events_emitted": [],
+        }
+    )
+    config = SdkConfig(mode="local_server", endpoint="http://unit-test.invalid")
+    async with MemoryClient(
+        config=config, transport=transport, auth=BearerAuth("unit-test")
+    ) as client:
+        await client.add("hello", user="u1", session="s1")
+
+    assert transport.calls[0]["json_body"] == {
+        "content": "hello",
+        "user": "u1",
+        "session": "s1",
+    }

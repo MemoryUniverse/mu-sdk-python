@@ -85,6 +85,7 @@ this class, through the decorator stack (see `decorators.py` docstring), and thr
 
 from __future__ import annotations
 
+from datetime import datetime
 from types import TracebackType
 from typing import Any, Self
 
@@ -381,6 +382,14 @@ class MemoryClient:
         user: str | None = None,
         session: str | None = None,
         agent: str | None = None,
+        # AD-312 (mu-core, 2026-09-26) — canonical `AddRequest.occurred_at` (that field's own
+        # docstring has the full rationale): the WORLD-TIME an activity actually occurred,
+        # asserted by the caller. PRIVATE-plane only, same reason `importance_score` joined the
+        # wire dump below only once the real route started honouring it — the legacy/shared wire
+        # shape (`MemoryCreateRequest`, Appendix A.1) is FROZEN and does not carry this field;
+        # sending it there would be a silent no-op, so it is validated for that path the same way
+        # every other private-only field already is.
+        occurred_at: datetime | None = None,
     ) -> MemoryWriteResult:
         """`POST /memories` (api-mcp-surface-spec.md §4.3; Appendix A.1 for the legacy/shared wire
         shape; design §2.5 for the private-plane one — see module docstring's "R2 wire-contract
@@ -449,6 +458,7 @@ class MemoryClient:
                 tier=tier,  # type: ignore[arg-type]  # validated by AddRequest's Literal
                 importance_score=importance_score,
                 metadata=metadata,
+                occurred_at=occurred_at,
             )
             # `importance_score` JOINED the include-set once the real mu-engine-server route
             # started honouring it (it now threads to `SurfaceFacade.add` -> the
@@ -457,9 +467,11 @@ class MemoryClient:
             # here meant no SDK caller could ever get a memory promoted into MTM over the wire.
             # `exclude_none=True` keeps this fully backward compatible: a caller that passes no
             # `importance_score` still sends a byte-identical body to the pre-fix one.
+            # `occurred_at` JOINS it here (AD-312) for the identical reason: the route now
+            # honours it (`mu_engine_server/routes/memories.py::add_memory`).
             body = request.model_dump(
                 mode="json",
-                include={"content", "user", "session", "importance_score"},
+                include={"content", "user", "session", "importance_score", "occurred_at"},
                 exclude_none=True,
             )
             response = await self._execute("POST", "/memories", json_body=body, headers=headers)
